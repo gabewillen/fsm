@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/cocoonspace/fsm"
+	"github.com/gabewillen/fsm"
 )
 
 const (
