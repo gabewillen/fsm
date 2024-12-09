@@ -23,7 +23,7 @@ func TestFSM(t *testing.T) {
 		fsm.On(EventFoo), fsm.Src(StateFoo),
 		fsm.Dst(StateBar),
 	)
-	res := f.Event(EventFoo)
+	res := f.Dispatch(EventFoo, nil)
 	if !res {
 		t.Error("Event returned false")
 	}
@@ -45,12 +45,12 @@ func TestCheck(t *testing.T) {
 		}),
 		fsm.Dst(StateBar),
 	)
-	res := f.Event(EventFoo)
+	res := f.Dispatch(EventFoo, nil)
 	if res || f.Current() == StateBar {
 		t.Error("Transition should not happen because of Check")
 	}
 	check = true
-	res = f.Event(EventFoo)
+	res = f.Dispatch(EventFoo, nil)
 	if !res && f.Current() != StateBar {
 		t.Error("Transition should happen thanks to Check")
 	}
@@ -75,12 +75,12 @@ func TestNotCheck(t *testing.T) {
 		}),
 		fsm.Dst(StateBar),
 	)
-	res := f.Event(EventFoo)
+	res := f.Dispatch(EventFoo, nil)
 	if res || f.Current() == StateBar {
 		t.Error("Transition should not happen because of NotCheck")
 	}
 	check = false
-	res = f.Event(EventFoo)
+	res = f.Dispatch(EventFoo, nil)
 	if !res && f.Current() != StateBar {
 		t.Error("Transition should happen thanks to NotCheck")
 	}
@@ -95,7 +95,7 @@ func TestCall(t *testing.T) {
 			call = true
 		}),
 	)
-	_ = f.Event(EventFoo)
+	_ = f.Dispatch(EventFoo, nil)
 	if !call {
 		t.Error("Call should have been called")
 	}
@@ -122,23 +122,23 @@ func TestTimes(t *testing.T) {
 		fsm.Dst(StateFoo),
 	)
 
-	res := f.Event(EventFoo)
+	res := f.Dispatch(EventFoo, nil)
 	if res || f.Current() == StateBar {
 		t.Error("Transition should not happen the first time")
 	}
-	res = f.Event(EventFoo)
+	res = f.Dispatch(EventFoo, nil)
 	if !res || f.Current() != StateBar {
 		t.Error("Transition should happen the second time")
 	}
-	res = f.Event(EventBar)
+	res = f.Dispatch(EventBar, nil)
 	if !res || f.Current() != StateFoo {
 		t.Error("FSM should have returned to StateFoo")
 	}
-	res = f.Event(EventFoo)
+	res = f.Dispatch(EventFoo, nil)
 	if res || f.Current() == StateBar {
 		t.Error("Transition should not happen the first time of the second run")
 	}
-	res = f.Event(EventFoo)
+	res = f.Dispatch(EventFoo, nil)
 	if !res || f.Current() != StateBar {
 		t.Error("Transition should happen the second time of the second run")
 	}
@@ -151,8 +151,8 @@ func ExampleTimes() {
 		fsm.Dst(StateBar),
 	)
 
-	_ = f.Event(EventFoo) // no transition
-	_ = f.Event(EventFoo) // transition to StateBar
+	_ = f.Dispatch(EventFoo, nil) // no transition
+	_ = f.Dispatch(EventFoo, nil) // transition to StateBar
 }
 
 func TestEnterExit(t *testing.T) {
@@ -173,14 +173,14 @@ func TestEnterExit(t *testing.T) {
 		exit = state
 	})
 
-	_ = f.Event(EventFoo)
+	_ = f.Dispatch(EventFoo, nil)
 	if entry != StateBar {
 		t.Error("Enter func has not been called")
 	}
 	if exit != StateFoo {
 		t.Error("Exit func has not been called")
 	}
-	_ = f.Event(EventBar)
+	_ = f.Dispatch(EventBar, nil)
 	if entry != StateFoo {
 		t.Error("Enter func has not been called")
 	}
@@ -207,7 +207,7 @@ func TestEnterExitState(t *testing.T) {
 		exit = true
 	})
 
-	_ = f.Event(EventFoo)
+	_ = f.Dispatch(EventFoo, nil)
 	if !entry {
 		t.Error("EnterState func has not been called")
 	}
@@ -215,7 +215,7 @@ func TestEnterExitState(t *testing.T) {
 		t.Error("ExitState func has wrongly been called")
 	}
 	entry, exit = false, false
-	_ = f.Event(EventBar)
+	_ = f.Dispatch(EventBar, nil)
 	if entry {
 		t.Error("EnterState func has wrongly been called")
 	}

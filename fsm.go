@@ -2,6 +2,7 @@ package fsm
 
 // Event is the event type.
 // You can define your own values as
+//
 //	const (
 //		EventFoo fsm.Event = iota
 //		EventBar
@@ -10,6 +11,7 @@ type Event int
 
 // State is the state type.
 // You can define your own values as
+//
 //	const (
 //		StateFoo fsm.State = iota
 //		StateBar
@@ -21,10 +23,10 @@ type transition struct {
 	actions    []optionAction
 }
 
-func (t *transition) match(e Event, times int, fsm *FSM) result {
+func (t *transition) match(e Event, times int, fsm *FSM, data interface{}) result {
 	var res result
 	for _, fn := range t.conditions {
-		cres := fn(e, times, fsm)
+		cres := fn(e, times, fsm, data)
 		if cres == resultNOK {
 			return resultNOK
 		}
@@ -35,9 +37,9 @@ func (t *transition) match(e Event, times int, fsm *FSM) result {
 	return res
 }
 
-func (t *transition) apply(fsm *FSM) {
+func (t *transition) apply(fsm *FSM, data interface{}) {
 	for _, fn := range t.actions {
-		fn(fsm)
+		fn(fsm, data)
 	}
 }
 
@@ -75,9 +77,9 @@ const (
 	resultNoAction
 )
 
-type optionCondition func(e Event, times int, fsm *FSM) result
+type optionCondition func(e Event, times int, fsm *FSM, data interface{}) result
 
-type optionAction func(*FSM)
+type optionAction func(*FSM, interface{})
 
 // Transition creates a new transition, usually having trigger On an Event, from a Src State, to a Dst State.
 func (f *FSM) Transition(opts ...Option) {
@@ -91,7 +93,7 @@ func (f *FSM) Transition(opts ...Option) {
 // Src defines the source States for a Transition.
 func Src(s ...State) Option {
 	return func(t *transition) {
-		t.conditions = append(t.conditions, func(e Event, times int, fsm *FSM) result {
+		t.conditions = append(t.conditions, func(e Event, times int, fsm *FSM, data interface{}) result {
 			for _, src := range s {
 				if fsm.current == src {
 					return resultOK
@@ -105,7 +107,7 @@ func Src(s ...State) Option {
 // On defines the Event that triggers a Transition.
 func On(e Event) Option {
 	return func(t *transition) {
-		t.conditions = append(t.conditions, func(evt Event, times int, fsm *FSM) result {
+		t.conditions = append(t.conditions, func(evt Event, times int, fsm *FSM, data interface{}) result {
 			if e == evt {
 				return resultOK
 			}
@@ -117,7 +119,7 @@ func On(e Event) Option {
 // Dst defines the new State the machine switches to after a Transition.
 func Dst(s State) Option {
 	return func(t *transition) {
-		t.actions = append(t.actions, func(fsm *FSM) {
+		t.actions = append(t.actions, func(fsm *FSM, data interface{}) {
 			if fsm.current == s {
 				return
 			}
@@ -141,7 +143,7 @@ func Dst(s State) Option {
 // NotCheck is an external condition that allows a Transition only if fn returns false.
 func NotCheck(fn func() bool) Option {
 	return func(t *transition) {
-		t.conditions = append(t.conditions, func(e Event, times int, fsm *FSM) result {
+		t.conditions = append(t.conditions, func(e Event, times int, fsm *FSM, data interface{}) result {
 			if !fn() {
 				return resultOK
 			}
@@ -153,7 +155,7 @@ func NotCheck(fn func() bool) Option {
 // Check is an external condition that allows a Transition only if fn returns true.
 func Check(fn func() bool) Option {
 	return func(t *transition) {
-		t.conditions = append(t.conditions, func(e Event, times int, fsm *FSM) result {
+		t.conditions = append(t.conditions, func(e Event, times int, fsm *FSM, data interface{}) result {
 			if fn() {
 				return resultOK
 			}
@@ -165,7 +167,7 @@ func Check(fn func() bool) Option {
 // Call defines a function that is called when a Transition occurs.
 func Call(fn func()) Option {
 	return func(t *transition) {
-		t.actions = append(t.actions, func(fsm *FSM) {
+		t.actions = append(t.actions, func(fsm *FSM, data interface{}) {
 			fn()
 		})
 	}
@@ -175,7 +177,7 @@ func Call(fn func()) Option {
 // Times will not work if multiple Transitions are possible at the same time.
 func Times(n int) Option {
 	return func(t *transition) {
-		t.conditions = append(t.conditions, func(e Event, times int, fsm *FSM) result {
+		t.conditions = append(t.conditions, func(e Event, times int, fsm *FSM, data interface{}) result {
 			if times == n {
 				return resultOK
 			}
@@ -219,15 +221,15 @@ func (f *FSM) ExitState(state State, fn func()) {
 
 // Event send an Event to a machine, applying at most one transition.
 // true is returned if a transition has been applied, false otherwise.
-func (f *FSM) Event(e Event) bool {
+func (f *FSM) Dispatch(e Event, data interface{}) bool {
 	for i := range f.transitions {
 		times := f.times
 		if i != f.previous {
 			times = 0
 		}
-		if res := f.transitions[i].match(e, times+1, f); res != resultNOK {
+		if res := f.transitions[i].match(e, times+1, f, data); res != resultNOK {
 			if res == resultOK {
-				f.transitions[i].apply(f)
+				f.transitions[i].apply(f, data)
 			}
 			if i == f.previous {
 				f.times++
