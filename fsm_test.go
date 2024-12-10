@@ -1,7 +1,6 @@
 package fsm_test
 
 import (
-	"context"
 	"sync"
 	"testing"
 	"time"
@@ -76,7 +75,7 @@ func TestEffect(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Effect(func(ctx context.Context, event fsm.Event, data interface{}) {
+			fsm.Effect(func(channel chan any, event fsm.Event, data interface{}) {
 				call = true
 			}),
 		),
@@ -125,21 +124,28 @@ func TestActivityTermination(t *testing.T) {
 
 	f := fsm.New(
 		fsm.Initial("foo",
-			fsm.Entry(func(ctx context.Context, event fsm.Event, data interface{}) {
+			fsm.Entry(func(ctx chan any, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
 			}),
-			fsm.Activity(func(ctx context.Context, event fsm.Event, data interface{}) {
+			fsm.Activity(func(ctx chan any, event fsm.Event, data interface{}) {
 				t.Log("Activity started")
 				activityRunning = true
 				wg.Done()
-				<-ctx.Done() // Block until context cancelled
+				<-ctx
+				// lock until context cancelled
 				activityRunning = false
+			}),
+			fsm.Exit(func(ctx chan any, event fsm.Event, data interface{}) {
+				t.Log("Exit action started")
 			}),
 		),
 		fsm.State("bar",
-			fsm.Entry(func(ctx context.Context, event fsm.Event, data interface{}) {
+			fsm.Entry(func(ctx chan any, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
 			}),
+			// Add empty activity and exit actions to avoid nil pointers
+			fsm.Activity(nil),
+			fsm.Exit(nil),
 		),
 		fsm.Transition(
 			fsm.On("next"),

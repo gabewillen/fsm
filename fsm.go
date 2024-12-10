@@ -1,30 +1,28 @@
 package fsm
 
 import (
-	"context"
 	"sync"
 )
 
 type Event string
 
-type Action func(context.Context, Event, any)
+type Action func(chan any, Event, any)
 type Constraint func(Event, any) bool
 
 type ActionNode struct {
 	execute   Action
-	ctx       context.Context
+	cancel    chan any
 	execution sync.WaitGroup
-	terminate context.CancelFunc
 }
 
-func (node *ActionNode) Execute(ctx context.Context, event Event, data any) *ActionNode {
+func (node *ActionNode) Execute(event Event, data any) *ActionNode {
 	if node == nil || node.execute == nil {
 		return nil
 	}
 	node.execution.Add(1)
-	node.ctx, node.terminate = context.WithCancel(ctx)
+	node.cancel = make(chan any)
 	go func() {
-		node.execute(node.ctx, event, data)
+		node.execute(node.cancel, event, data)
 		node.execution.Done()
 	}()
 	return node
@@ -38,10 +36,10 @@ func (node *ActionNode) Wait() {
 }
 
 func (node *ActionNode) Terminate() {
-	if node == nil || node.terminate == nil {
+	if node == nil || node.cancel == nil {
 		return
 	}
-	node.terminate()
+	close(node.cancel)
 	node.execution.Wait()
 }
 
@@ -52,24 +50,24 @@ type StateNode struct {
 	transitions []*TransitionNode
 }
 
-func (state *StateNode) enter(ctx context.Context, event Event, data any) {
+func (state *StateNode) enter(event Event, data any) {
 	if state == nil {
 		return
 	}
 	// execute entry action
-	state.entry.Execute(ctx, event, data)
+	state.entry.Execute(event, data)
 	// wait for entry action to complete
 	state.entry.Wait()
 	// execute activity action this runs in a goroutine
-	state.activity.Execute(ctx, event, data)
+	state.activity.Execute(event, data)
 }
 
-func (state *StateNode) leave(ctx context.Context, event Event, data any) {
+func (state *StateNode) leave(event Event, data any) {
 	if state == nil {
 		return
 	}
 	state.activity.Terminate()
-	state.exit.Execute(ctx, event, data)
+	state.exit.Execute(event, data)
 	state.exit.Wait()
 }
 
@@ -89,7 +87,6 @@ type FSM struct {
 	current      string
 	initial      string
 	mutex        sync.Mutex
-	ctx          context.Context
 }
 
 type PartialNode func(*FSM, *StateNode, *TransitionNode)
@@ -99,7 +96,6 @@ func New(nodes ...PartialNode) *FSM {
 	fsm := &FSM{
 		states: map[string]*StateNode{},
 		mutex:  sync.Mutex{},
-		ctx:    context.Background(),
 	}
 	for _, partial := range nodes {
 		partial(fsm, nil, nil)
@@ -108,7 +104,7 @@ func New(nodes ...PartialNode) *FSM {
 	if !ok {
 		return fsm
 	}
-	initial.enter(fsm.ctx, "", nil)
+	initial.enter("", nil)
 	return fsm
 }
 
@@ -306,10 +302,10 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 			return true
 		}
 		if ok {
-			state.leave(fsm.ctx, event, data)
+			state.leave(event, data)
 		}
 		if transition.effect != nil {
-			transition.effect.Execute(fsm.ctx, event, data)
+			transition.effect.Execute(event, data)
 			transition.effect.Wait()
 		}
 		if fsm.onTransition != nil {
@@ -317,7 +313,7 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 		}
 		fsm.current = transition.target
 		if ok {
-			target.enter(fsm.ctx, event, data)
+			target.enter(event, data)
 		}
 		return true
 	}
