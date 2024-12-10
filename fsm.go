@@ -59,6 +59,24 @@ func State(id string, nodes ...PartialNode) PartialNode {
 	}
 }
 
+func Entry(fn Action) PartialNode {
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
+		state.enter = fn
+	}
+}
+
+func Activity(fn Action) PartialNode {
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
+		state.activity = fn
+	}
+}
+
+func Exit(fn Action) PartialNode {
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
+		state.exit = fn
+	}
+}
+
 // Src defines the source States for a Transition.
 func Source(source ...string) PartialNode {
 	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
