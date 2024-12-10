@@ -9,10 +9,15 @@ import (
 // required for type guard
 type Node interface{}
 
-// type Event interface {
-// 	Node
-// 	Kind() string
-// }
+type Context struct {
+	*FSM
+	context.Context
+}
+
+//	type Event interface {
+//		Node
+//		Kind() string
+//	}
 
 // type EventNode struct {
 // 	kind string
@@ -22,8 +27,19 @@ type Node interface{}
 //		return node.kind
 //	}
 type Event string
-type Action func(context.Context, Event, any)
-type Constraint func(context.Context, Event, any) bool
+type Action func(Context, Event, any)
+type Constraint func(Context, Event, any) bool
+
+type constraint struct {
+	expr Constraint
+}
+
+func (element *constraint) evaluate(fsm *FSM, event Event, data any) bool {
+	if element == nil {
+		return true
+	}
+	return element.expr(Context{FSM: fsm, Context: fsm.ctx}, event, data)
+}
 
 type behavior struct {
 	action    Action
@@ -32,14 +48,15 @@ type behavior struct {
 	mutex     *sync.Mutex
 }
 
-func (element *behavior) execute(ctx context.Context, event Event, data any) *behavior {
+func (element *behavior) execute(fsm *FSM, event Event, data any) *behavior {
 	if element == nil || element.action == nil {
 		return nil
 	}
 	element.execution.Add(1)
-	ctx, element.cancel = context.WithCancel(ctx)
+	var ctx context.Context
+	ctx, element.cancel = context.WithCancel(fsm.ctx)
 	go func() {
-		element.action(ctx, event, data)
+		element.action(Context{FSM: fsm, Context: ctx}, event, data)
 		element.execution.Done()
 	}()
 	return element
@@ -69,22 +86,22 @@ type state struct {
 	submachine  *FSM
 }
 
-func (statePtr *state) enter(ctx context.Context, event Event, data any) {
+func (statePtr *state) enter(fsm *FSM, event Event, data any) {
 	if statePtr == nil {
 		return
 	}
 	// execute entry action
-	statePtr.entry.execute(ctx, event, data)
+	statePtr.entry.execute(fsm, event, data)
 	// wait for entry action to complete
 	statePtr.entry.wait()
 	// execute activity action this runs in a goroutine
-	statePtr.activity.execute(ctx, event, data)
+	statePtr.activity.execute(fsm, event, data)
 	if statePtr.submachine != nil {
-		statePtr.submachine.execute(ctx, event, data)
+		statePtr.submachine.execute(fsm, event, data)
 	}
 }
 
-func (statePtr *state) leave(ctx context.Context, event Event, data any) {
+func (statePtr *state) leave(fsm *FSM, event Event, data any) {
 	if statePtr == nil {
 		return
 	}
@@ -93,7 +110,7 @@ func (statePtr *state) leave(ctx context.Context, event Event, data any) {
 		statePtr.submachine.Reset()
 	}
 	statePtr.activity.terminate()
-	statePtr.exit.execute(ctx, event, data)
+	statePtr.exit.execute(fsm, event, data)
 	statePtr.exit.wait()
 
 }
@@ -114,7 +131,7 @@ func (element *state) Submachine() *FSM {
 
 type transition struct {
 	events []Event
-	guard  Constraint
+	guard  *constraint
 	effect *behavior
 	target string
 }
@@ -134,9 +151,9 @@ type model struct {
 // FSM is a finite state machine.
 type FSM struct {
 	*model
+	ctx          context.Context
 	onDispatch   func(Event, any)
 	onTransition func(Event, string, string)
-	ctx          context.Context
 }
 
 type PartialElement func(*model, *state, *transition)
@@ -144,12 +161,20 @@ type PartialElement func(*model, *state, *transition)
 // New creates a new finite state machine having the specified initial state.
 func New(context context.Context, stateMachineModel *model) *FSM {
 	fsm := &FSM{
-		model: stateMachineModel,
-		ctx:   context,
+		model: &model{
+			behavior: &behavior{
+				action:    stateMachineModel.behavior.action,
+				execution: sync.WaitGroup{},
+				mutex:     &sync.Mutex{},
+			},
+			states:  stateMachineModel.states,
+			initial: stateMachineModel.initial,
+			current: stateMachineModel.current,
+		},
+		ctx: context,
 	}
-	slog.Info("New FSM", "fsm", fsm)
-	fsm.behavior.execute(fsm.ctx, "", nil)
-	fsm.behavior.wait()
+	fsm.model.behavior.execute(fsm, "", nil)
+	fsm.model.behavior.wait()
 	return fsm
 }
 
@@ -284,7 +309,9 @@ func Guard(fn Constraint) PartialElement {
 		if transitionElement == nil {
 			return
 		}
-		transitionElement.guard = fn
+		transitionElement.guard = &constraint{
+			expr: fn,
+		}
 	}
 }
 
@@ -389,7 +416,7 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 		if !ok {
 			continue
 		}
-		if transition.guard != nil && !transition.guard(fsm.ctx, event, data) {
+		if transition.guard != nil && !transition.guard.evaluate(fsm, event, data) {
 			continue
 		}
 		target, ok := fsm.states[transition.target]
@@ -397,10 +424,10 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 			return true
 		}
 		if ok {
-			state.leave(fsm.ctx, event, data)
+			state.leave(fsm, event, data)
 		}
 		if transition.effect != nil {
-			transition.effect.execute(fsm.ctx, event, data)
+			transition.effect.execute(fsm, event, data)
 			transition.effect.wait()
 		}
 		if fsm.onTransition != nil {
@@ -408,7 +435,7 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 		}
 		fsm.current = transition.target
 		if ok {
-			target.enter(fsm.ctx, event, data)
+			target.enter(fsm, event, data)
 		}
 		return true
 	}
@@ -425,15 +452,13 @@ func Model(elements ...PartialElement) *model {
 	for _, partial := range elements {
 		partial(newModel, nil, nil)
 	}
-	newModel.behavior.action = func(ctx context.Context, event Event, data any) {
-		slog.Info("Model behavior execution", "event", event, "data", data, "model", newModel)
+	newModel.behavior.action = func(ctx Context, event Event, data any) {
 		initial, ok := newModel.states[newModel.initial]
-		slog.Info("WE ARE RIGHT HERE behavior execution", "initial", initial, "ok", ok)
 
 		if !ok {
 			return
 		}
-		initial.enter(ctx, "", nil)
+		initial.enter(ctx.FSM, event, data)
 	}
 	return newModel
 }

@@ -52,7 +52,7 @@ func TestGuard(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Guard(func(ctx context.Context, event fsm.Event, data interface{}) bool {
+			fsm.Guard(func(ctx fsm.Context, event fsm.Event, data interface{}) bool {
 				return check
 			}),
 		),
@@ -79,7 +79,7 @@ func TestEffect(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Effect(func(ctx context.Context, event fsm.Event, data interface{}) {
+			fsm.Effect(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				call = true
 			}),
 		),
@@ -130,10 +130,10 @@ func TestActivityTermination(t *testing.T) {
 
 	model := fsm.Model(
 		fsm.Initial("foo",
-			fsm.Entry(func(ctx context.Context, event fsm.Event, data interface{}) {
+			fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
 			}),
-			fsm.Activity(func(ctx context.Context, event fsm.Event, data interface{}) {
+			fsm.Activity(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				t.Log("Activity started")
 				activityRunning = true
 				wg.Done()
@@ -142,7 +142,7 @@ func TestActivityTermination(t *testing.T) {
 			}),
 		),
 		fsm.State("bar",
-			fsm.Entry(func(ctx context.Context, event fsm.Event, data interface{}) {
+			fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
 			}),
 		),
