@@ -75,7 +75,7 @@ func TestEffect(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Effect(func(channel chan any, event fsm.Event, data interface{}) {
+			fsm.Effect(func(channel chan bool, event fsm.Event, data interface{}) {
 				call = true
 			}),
 		),
@@ -124,10 +124,10 @@ func TestActivityTermination(t *testing.T) {
 
 	f := fsm.New(
 		fsm.Initial("foo",
-			fsm.Entry(func(ctx chan any, event fsm.Event, data interface{}) {
+			fsm.Entry(func(ctx chan bool, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
 			}),
-			fsm.Activity(func(ctx chan any, event fsm.Event, data interface{}) {
+			fsm.Activity(func(ctx chan bool, event fsm.Event, data interface{}) {
 				t.Log("Activity started")
 				activityRunning = true
 				wg.Done()
@@ -135,12 +135,12 @@ func TestActivityTermination(t *testing.T) {
 				// lock until context cancelled
 				activityRunning = false
 			}),
-			fsm.Exit(func(ctx chan any, event fsm.Event, data interface{}) {
+			fsm.Exit(func(ctx chan bool, event fsm.Event, data interface{}) {
 				t.Log("Exit action started")
 			}),
 		),
 		fsm.State("bar",
-			fsm.Entry(func(ctx chan any, event fsm.Event, data interface{}) {
+			fsm.Entry(func(ctx chan bool, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
 			}),
 			// Add empty activity and exit actions to avoid nil pointers
@@ -171,3 +171,28 @@ func TestActivityTermination(t *testing.T) {
 		t.Error("Activity should have been terminated")
 	}
 }
+
+// func BenchmarkFSM(b *testing.B) {
+// 	f := fsm.New(
+// 		fsm.Initial("start",
+// 			fsm.Entry(nil),
+// 			fsm.Activity(nil),
+// 			fsm.Exit(nil),
+// 			fsm.Transition(
+// 				fsm.On("next"),
+// 				fsm.Target("end"),
+// 			),
+// 		),
+// 		fsm.State("end",
+// 			fsm.Entry(nil),
+// 			fsm.Activity(nil),
+// 			fsm.Exit(nil),
+// 		),
+// 	)
+
+// 	b.ResetTimer()
+// 	for i := 0; i < b.N; i++ {
+// 		f.Dispatch("next", nil)
+// 		f.Reset()
+// 	}
+// }

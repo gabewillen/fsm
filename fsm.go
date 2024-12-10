@@ -6,12 +6,12 @@ import (
 
 type Event string
 
-type Action func(chan any, Event, any)
+type Action func(chan bool, Event, any)
 type Constraint func(Event, any) bool
 
 type ActionNode struct {
 	execute   Action
-	cancel    chan any
+	cancel    chan bool
 	execution sync.WaitGroup
 }
 
@@ -20,7 +20,6 @@ func (node *ActionNode) Execute(event Event, data any) *ActionNode {
 		return nil
 	}
 	node.execution.Add(1)
-	node.cancel = make(chan any)
 	go func() {
 		node.execute(node.cancel, event, data)
 		node.execution.Done()
@@ -39,7 +38,7 @@ func (node *ActionNode) Terminate() {
 	if node == nil || node.cancel == nil {
 		return
 	}
-	close(node.cancel)
+	node.cancel <- true
 	node.execution.Wait()
 }
 
@@ -137,6 +136,7 @@ func Entry(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
 		state.entry = &ActionNode{
 			execute: fn,
+			cancel:  make(chan bool, 1),
 		}
 	}
 }
@@ -145,6 +145,7 @@ func Activity(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
 		state.activity = &ActionNode{
 			execute: fn,
+			cancel:  make(chan bool, 1),
 		}
 	}
 }
@@ -153,6 +154,7 @@ func Exit(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
 		state.exit = &ActionNode{
 			execute: fn,
+			cancel:  make(chan bool, 1),
 		}
 	}
 }
@@ -232,6 +234,7 @@ func Effect(fn Action) PartialNode {
 		}
 		transition.effect = &ActionNode{
 			execute: fn,
+			cancel:  make(chan bool, 1),
 		}
 	}
 }
