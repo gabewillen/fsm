@@ -1,48 +1,14 @@
 package fsm
 
-// Event is the event type.
-// You can define your own values as
-//
-//	const (
-//		EventFoo fsm.Event = iota
-//		EventBar
-//	)
 type Event string
 
-// State is the state type.
-// You can define your own values as
-//
-//	const (
-//		StateFoo fsm.State = iota
-//		StateBar
-//	)
 type Action func(*FSM, Event, interface{})
 type Constraint func(*FSM, Event, interface{}) bool
 
-// func (t *transition) match(e Event, times int, fsm *FSM, data interface{}) result {
-// 	var res result
-// 	for _, fn := range t.conditions {
-// 		cres := fn(fsm, e, data)
-// 		if cres == resultNOK {
-// 			return resultNOK
-// 		}
-// 		if cres > res {
-// 			res = cres
-// 		}
-// 	}
-// 	return res
-// }
-
-// func (t *transition) apply(fsm *FSM, data interface{}) {
-// 	for _, fn := range t.actions {
-// 		fn(fsm, data)
-// 	}
-// }
-
 type StateNode struct {
-	enter       func(event Event, data interface{})
-	activity    func(event Event, data interface{})
-	exit        func(event Event, data interface{})
+	enter       Action
+	activity    Action
+	exit        Action
 	transitions []*TransitionNode
 }
 
@@ -69,22 +35,12 @@ func New(nodes ...PartialNode) *FSM {
 	fsm := &FSM{
 		states: map[string]*StateNode{},
 	}
-	for _, factory := range nodes {
-		factory(fsm, nil, nil)
+	for _, partial := range nodes {
+		partial(fsm, nil, nil)
 	}
 
 	return fsm
 }
-
-// Transition creates a new transition, usually having trigger On an Event, from a Src State, to a Dst State.
-// func (f *FSM) Transition(opts ...Option) *FSM {
-// 	t := transition{}
-// 	for _, opt := range opts {
-// 		opt(&t)
-// 	}
-// 	f.transitions = append(f.transitions, t)
-// 	return f
-// }
 
 func Initial(id string) PartialNode {
 	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
@@ -94,10 +50,10 @@ func Initial(id string) PartialNode {
 }
 
 func State(id string, nodes ...PartialNode) PartialNode {
-	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
-		state = &StateNode{}
+	return func(fsm *FSM, _ *StateNode, _ *TransitionNode) {
+		state := &StateNode{}
 		for _, node := range nodes {
-			node(fsm, state, transition)
+			node(fsm, state, nil)
 		}
 		fsm.states[id] = state
 	}
@@ -149,30 +105,6 @@ func Target[T Targetable](target T) PartialNode {
 	}
 }
 
-// return func(fsm *FSM) {
-// 	fsm.transitions = append(fsm.transitions, transition{
-// 		actions: []Action{func(fsm *FSM, data interface{}) {
-// 	t.actions = append(t.actions, func(fsm *FSM, data interface{}) {
-// 		if fsm.current == s {
-// 			return
-// 		}
-// 		if fn, ok := fsm.actions[fsm.current]; ok {
-// 			fn.exit()
-// 		}
-// 		if fsm.exit != nil {
-// 			fsm.exit(fsm.current)
-// 		}
-// 		fsm.current = s
-// 		if fn, ok := fsm.enterState[fsm.current]; ok {
-// 			fn()
-// 		}
-// 		if fsm.enter != nil {
-// 			fsm.enter(fsm.current)
-// 		}
-// 	})
-// }
-// }
-
 // Check is an external condition that allows a Transition only if fn returns true.
 func Guard(fn Constraint) PartialNode {
 	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
@@ -194,8 +126,8 @@ func Effect(fn Action) PartialNode {
 }
 
 func Transition(nodes ...PartialNode) PartialNode {
-	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
-		transition = &TransitionNode{}
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
+		transition := &TransitionNode{}
 		for _, node := range nodes {
 			node(fsm, nil, transition)
 		}
@@ -255,7 +187,7 @@ func (fsm *FSM) Dispatch(event Event, data interface{}) bool {
 			return true
 		}
 		if ok && state.exit != nil {
-			state.exit(event, data)
+			state.exit(fsm, event, data)
 		}
 		if transition.effect != nil {
 			transition.effect(fsm, event, data)
@@ -265,7 +197,7 @@ func (fsm *FSM) Dispatch(event Event, data interface{}) bool {
 		}
 		fsm.current = transition.target
 		if ok && target.enter != nil {
-			target.enter(event, data)
+			target.enter(fsm, event, data)
 		}
 		return true
 	}
