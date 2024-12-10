@@ -44,6 +44,9 @@ func New(nodes ...PartialNode) *FSM {
 
 func Initial(id string) PartialNode {
 	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
+		if _, ok := fsm.states[id]; !ok {
+			fsm.states[id] = &StateNode{}
+		}
 		fsm.initial = id
 		fsm.current = id
 	}
@@ -116,9 +119,20 @@ func Target[T Targetable](target T) PartialNode {
 		}
 		switch target := any(target).(type) {
 		case string:
+			if _, ok := fsm.states[target]; !ok {
+				fsm.states[target] = &StateNode{}
+			}
 			transition.target = target
 		case PartialNode:
 			target(fsm, state, transition)
+		}
+	}
+}
+
+func Choice(transitions ...PartialNode) PartialNode {
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
+		for _, transition := range transitions {
+			transition(fsm, state, nil)
 		}
 	}
 }
@@ -148,6 +162,9 @@ func Transition(nodes ...PartialNode) PartialNode {
 		transition := &TransitionNode{}
 		for _, node := range nodes {
 			node(fsm, nil, transition)
+		}
+		if state != nil {
+			state.transitions = append(state.transitions, transition)
 		}
 	}
 }
@@ -201,7 +218,6 @@ func (fsm *FSM) Dispatch(event Event, data interface{}) bool {
 		}
 		target, ok := fsm.states[transition.target]
 		if !ok {
-
 			return true
 		}
 		if ok && state.exit != nil {
