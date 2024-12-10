@@ -47,7 +47,7 @@ func TestGuard(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Guard(func(fsm *fsm.FSM, event fsm.Event, data interface{}) bool {
+			fsm.Guard(func(event fsm.Event, data interface{}) bool {
 				return check
 			}),
 		),
@@ -63,16 +63,6 @@ func TestGuard(t *testing.T) {
 	}
 }
 
-// func ExampleCheck() {
-// 	f := fsm.New(StateFoo)
-// 	f.Transition(
-// 		fsm.On(EventFoo), fsm.Src(StateFoo), fsm.Check(func() bool {
-// 			return true
-// 		}),
-// 		fsm.Dst(StateBar),
-// 	)
-// }
-
 func TestEffect(t *testing.T) {
 	call := false
 	f := fsm.New(
@@ -83,7 +73,7 @@ func TestEffect(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Effect(func(fsm *fsm.FSM, event fsm.Event, data interface{}) {
+			fsm.Effect(func(event fsm.Event, data interface{}) {
 				call = true
 			}),
 		),
@@ -92,10 +82,6 @@ func TestEffect(t *testing.T) {
 	if !call {
 		t.Error("Call should have been called")
 	}
-}
-
-type Foo struct {
-	*fsm.FSM
 }
 
 func TestOnTransition(t *testing.T) {
@@ -114,7 +100,7 @@ func TestOnTransition(t *testing.T) {
 		),
 	)
 	var calls int
-	f.OnTransition(func(fsm *fsm.FSM, event fsm.Event, source, target string) {
+	f.OnTransition(func(event fsm.Event, source, target string) {
 		calls++
 	})
 	_ = f.Dispatch("foo", nil)
@@ -128,38 +114,3 @@ func TestOnTransition(t *testing.T) {
 		return
 	}
 }
-
-// func TestEnterExitState(t *testing.T) {
-// 	f := fsm.New(StateFoo)
-// 	f.Transition(
-// 		fsm.On(EventFoo), fsm.Src(StateFoo),
-// 		fsm.Dst(StateBar),
-// 	)
-// 	f.Transition(
-// 		fsm.On(EventBar), fsm.Src(StateBar),
-// 		fsm.Dst(StateFoo),
-// 	)
-// 	entry, exit := false, false
-// 	f.EnterState(StateBar, func() {
-// 		entry = true
-// 	})
-// 	f.ExitState(StateBar, func() {
-// 		exit = true
-// 	})
-
-// 	_ = f.Dispatch(EventFoo, nil)
-// 	if !entry {
-// 		t.Error("EnterState func has not been called")
-// 	}
-// 	if exit {
-// 		t.Error("ExitState func has wrongly been called")
-// 	}
-// 	entry, exit = false, false
-// 	_ = f.Dispatch(EventBar, nil)
-// 	if entry {
-// 		t.Error("EnterState func has wrongly been called")
-// 	}
-// 	if !exit {
-// 		t.Error("ExitState func has not been called")
-// 	}
-// }

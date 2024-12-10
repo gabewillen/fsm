@@ -1,9 +1,13 @@
 package fsm
 
+import (
+	"fmt"
+)
+
 type Event string
 
-type Action func(*FSM, Event, interface{})
-type Constraint func(*FSM, Event, interface{}) bool
+type Action func(Event, interface{})
+type Constraint func(Event, interface{}) bool
 
 type StateNode struct {
 	enter       Action
@@ -22,8 +26,8 @@ type TransitionNode struct {
 // FSM is a finite state machine.
 type FSM struct {
 	states       map[string]*StateNode
-	onDispatch   func(*FSM, Event, interface{})
-	onTransition func(*FSM, Event, string, string)
+	onDispatch   func(Event, interface{})
+	onTransition func(Event, string, string)
 	current      string
 	initial      string
 }
@@ -38,7 +42,13 @@ func New(nodes ...PartialNode) *FSM {
 	for _, partial := range nodes {
 		partial(fsm, nil, nil)
 	}
-
+	initial, ok := fsm.states[fsm.initial]
+	if !ok {
+		panic(fmt.Sprintf("initial state %s not found", fsm.initial))
+	}
+	if initial.enter != nil {
+		initial.enter("", nil)
+	}
 	return fsm
 }
 
@@ -65,7 +75,7 @@ func State(id string, nodes ...PartialNode) PartialNode {
 	}
 }
 
-func Entry(fn Action) PartialNode {
+func Entry(fn func(event Event, data interface{})) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
 		state.enter = fn
 	}
@@ -183,12 +193,12 @@ func (f *FSM) State() string {
 }
 
 // Enter sets a func that will be called when entering any state.
-func (f *FSM) OnTransition(fn func(*FSM, Event, string, string)) {
+func (f *FSM) OnTransition(fn func(Event, string, string)) {
 	f.onTransition = fn
 }
 
 // Exit sets a func that will be called when exiting any state.
-func (f *FSM) OnDispatch(fn func(*FSM, Event, interface{})) {
+func (f *FSM) OnDispatch(fn func(Event, interface{})) {
 	f.onDispatch = fn
 }
 
@@ -216,7 +226,7 @@ func (fsm *FSM) Dispatch(event Event, data interface{}) bool {
 		if !ok {
 			continue
 		}
-		if transition.guard != nil && !transition.guard(fsm, event, data) {
+		if transition.guard != nil && !transition.guard(event, data) {
 			continue
 		}
 		target, ok := fsm.states[transition.target]
@@ -224,17 +234,17 @@ func (fsm *FSM) Dispatch(event Event, data interface{}) bool {
 			return true
 		}
 		if ok && state.exit != nil {
-			state.exit(fsm, event, data)
+			state.exit(event, data)
 		}
 		if transition.effect != nil {
-			transition.effect(fsm, event, data)
+			transition.effect(event, data)
 		}
 		if fsm.onTransition != nil {
-			fsm.onTransition(fsm, event, fsm.current, transition.target)
+			fsm.onTransition(event, fsm.current, transition.target)
 		}
 		fsm.current = transition.target
 		if ok && target.enter != nil {
-			target.enter(fsm, event, data)
+			target.enter(event, data)
 		}
 		return true
 	}
