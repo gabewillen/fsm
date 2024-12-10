@@ -2,41 +2,38 @@ package fsm
 
 type Event string
 
-type Interface interface{}
+type Action func(*FSM, Event, interface{})
+type Constraint func(*FSM, Event, interface{}) bool
 
-type Action[T Interface] func(T, Event, interface{})
-type Constraint[T Interface] func(T, Event, interface{}) bool
-
-type StateNode[T Interface] struct {
-	enter       Action[T]
-	activity    Action[T]
-	exit        Action[T]
-	transitions []*TransitionNode[T]
+type StateNode struct {
+	enter       Action
+	activity    Action
+	exit        Action
+	transitions []*TransitionNode
 }
 
-type TransitionNode[T Interface] struct {
+type TransitionNode struct {
 	events []Event
-	guard  Constraint[T]
-	effect Action[T]
+	guard  Constraint
+	effect Action
 	target string
 }
 
 // FSM is a finite state machine.
-type FSM[T Interface] struct {
-	Interface
-	states       map[string]*StateNode[T]
-	onDispatch   func(T, Event, interface{})
-	onTransition func(T, Event, string, string)
+type FSM struct {
+	states       map[string]*StateNode
+	onDispatch   func(*FSM, Event, interface{})
+	onTransition func(*FSM, Event, string, string)
 	current      string
 	initial      string
 }
 
-type PartialNode[T Interface] func(*FSM[T], *StateNode[T], *TransitionNode[T])
+type PartialNode func(*FSM, *StateNode, *TransitionNode)
 
 // New creates a new finite state machine having the specified initial state.
-func New[T Interface](nodes ...PartialNode[T]) *FSM[T] {
-	fsm := &FSM[T]{
-		states: map[string]*StateNode[T]{},
+func New(nodes ...PartialNode) *FSM {
+	fsm := &FSM{
+		states: map[string]*StateNode{},
 	}
 	for _, partial := range nodes {
 		partial(fsm, nil, nil)
@@ -45,10 +42,10 @@ func New[T Interface](nodes ...PartialNode[T]) *FSM[T] {
 	return fsm
 }
 
-func Initial(id string, nodes ...PartialNode[Interface]) PartialNode[Interface] {
-	return func(fsm *FSM[Interface], state *StateNode[Interface], transition *TransitionNode[Interface]) {
+func Initial(id string, nodes ...PartialNode) PartialNode {
+	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
 		if _, ok := fsm.states[id]; !ok {
-			fsm.states[id] = &StateNode[Interface]{}
+			fsm.states[id] = &StateNode{}
 		}
 		fsm.initial = id
 		fsm.current = id
@@ -58,9 +55,9 @@ func Initial(id string, nodes ...PartialNode[Interface]) PartialNode[Interface] 
 	}
 }
 
-func State(id string, nodes ...PartialNode[Interface]) PartialNode[Interface] {
-	return func(fsm *FSM[Interface], _ *StateNode[Interface], _ *TransitionNode[Interface]) {
-		state := &StateNode[Interface]{}
+func State(id string, nodes ...PartialNode) PartialNode {
+	return func(fsm *FSM, _ *StateNode, _ *TransitionNode) {
+		state := &StateNode{}
 		for _, node := range nodes {
 			node(fsm, state, nil)
 		}
@@ -68,34 +65,34 @@ func State(id string, nodes ...PartialNode[Interface]) PartialNode[Interface] {
 	}
 }
 
-func Entry[T Interface](fn Action[T]) PartialNode[T] {
-	return func(fsm *FSM[T], state *StateNode[T], _ *TransitionNode[T]) {
+func Entry(fn Action) PartialNode {
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
 		state.enter = fn
 	}
 }
 
-func Activity[T Interface](fn Action[T]) PartialNode[T] {
-	return func(fsm *FSM[T], state *StateNode[T], _ *TransitionNode[T]) {
+func Activity(fn Action) PartialNode {
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
 		state.activity = fn
 	}
 }
 
-func Exit[T Interface](fn Action[T]) PartialNode[T] {
-	return func(fsm *FSM[T], state *StateNode[T], _ *TransitionNode[T]) {
+func Exit(fn Action) PartialNode {
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
 		state.exit = fn
 	}
 }
 
 // Src defines the source States for a Transition.
-func Source(source ...string) PartialNode[Interface] {
-	return func(fsm *FSM[Interface], state *StateNode[Interface], transition *TransitionNode[Interface]) {
+func Source(source ...string) PartialNode {
+	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
 		if transition == nil {
 			return
 		}
 		for _, src := range source {
 			state, ok := fsm.states[src]
 			if !ok {
-				state = &StateNode[Interface]{}
+				state = &StateNode{}
 				fsm.states[src] = state
 			}
 			state.transitions = append(state.transitions, transition)
@@ -104,8 +101,8 @@ func Source(source ...string) PartialNode[Interface] {
 }
 
 // On defines the Event that triggers a Transition.
-func On(events ...Event) PartialNode[Interface] {
-	return func(fsm *FSM[Interface], state *StateNode[Interface], transition *TransitionNode[Interface]) {
+func On(events ...Event) PartialNode {
+	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
 		if transition == nil {
 			return
 		}
@@ -113,30 +110,30 @@ func On(events ...Event) PartialNode[Interface] {
 	}
 }
 
-type Targetable[T Interface] interface {
-	string | PartialNode[T]
+type Targetable interface {
+	string | PartialNode
 }
 
 // Dst defines the new State the machine switches to after a Transition.
-func Target[T Targetable[Interface]](target T) PartialNode[Interface] {
-	return func(fsm *FSM[Interface], state *StateNode[Interface], transition *TransitionNode[Interface]) {
+func Target[T Targetable](target T) PartialNode {
+	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
 		if transition == nil {
 			return
 		}
 		switch target := any(target).(type) {
 		case string:
 			if _, ok := fsm.states[target]; !ok {
-				fsm.states[target] = &StateNode[Interface]{}
+				fsm.states[target] = &StateNode{}
 			}
 			transition.target = target
-		case PartialNode[Interface]:
+		case PartialNode:
 			target(fsm, state, transition)
 		}
 	}
 }
 
-func Choice(transitions ...PartialNode[Interface]) PartialNode[Interface] {
-	return func(fsm *FSM[Interface], state *StateNode[Interface], _ *TransitionNode[Interface]) {
+func Choice(transitions ...PartialNode) PartialNode {
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
 		for _, transition := range transitions {
 			transition(fsm, state, nil)
 		}
@@ -144,8 +141,8 @@ func Choice(transitions ...PartialNode[Interface]) PartialNode[Interface] {
 }
 
 // Check is an external condition that allows a Transition only if fn returns true.
-func Guard[T Interface](fn Constraint[T]) PartialNode[T] {
-	return func(fsm *FSM[T], state *StateNode[T], transition *TransitionNode[T]) {
+func Guard(fn Constraint) PartialNode {
+	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
 		if transition == nil {
 			return
 		}
@@ -154,8 +151,8 @@ func Guard[T Interface](fn Constraint[T]) PartialNode[T] {
 }
 
 // // Call defines a function that is called when a Transition occurs.
-func Effect[T Interface](fn Action[T]) PartialNode[T] {
-	return func(fsm *FSM[T], state *StateNode[T], transition *TransitionNode[T]) {
+func Effect(fn Action) PartialNode {
+	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
 		if transition == nil {
 			return
 		}
@@ -163,9 +160,9 @@ func Effect[T Interface](fn Action[T]) PartialNode[T] {
 	}
 }
 
-func Transition(nodes ...PartialNode[Interface]) PartialNode[Interface] {
-	return func(fsm *FSM[Interface], state *StateNode[Interface], _ *TransitionNode[Interface]) {
-		transition := &TransitionNode[Interface]{}
+func Transition(nodes ...PartialNode) PartialNode {
+	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
+		transition := &TransitionNode{}
 		for _, node := range nodes {
 			node(fsm, nil, transition)
 		}
@@ -176,22 +173,22 @@ func Transition(nodes ...PartialNode[Interface]) PartialNode[Interface] {
 }
 
 // Reset resets the machine to its initial state.
-func (f *FSM[T]) Reset() {
+func (f *FSM) Reset() {
 	f.current = f.initial
 }
 
 // Current returns the current state.
-func (f *FSM[T]) State() string {
+func (f *FSM) State() string {
 	return f.current
 }
 
 // Enter sets a func that will be called when entering any state.
-func (f *FSM[T]) OnTransition(fn func(T, Event, string, string)) {
+func (f *FSM) OnTransition(fn func(*FSM, Event, string, string)) {
 	f.onTransition = fn
 }
 
 // Exit sets a func that will be called when exiting any state.
-func (f *FSM[T]) OnDispatch(fn func(T, Event, interface{})) {
+func (f *FSM) OnDispatch(fn func(*FSM, Event, interface{})) {
 	f.onDispatch = fn
 }
 
@@ -207,12 +204,8 @@ func find[T any](slice []T, fn func(T) bool) (T, bool) {
 
 // Event send an Event to a machine, applying at most one transition.
 // true is returned if a transition has been applied, false otherwise.
-func (fsm *FSM[T]) Dispatch(event Event, data interface{}) bool {
+func (fsm *FSM) Dispatch(event Event, data interface{}) bool {
 	state, ok := fsm.states[fsm.current]
-	if !ok {
-		return false
-	}
-	this, ok := any(fsm).(T)
 	if !ok {
 		return false
 	}
@@ -223,7 +216,7 @@ func (fsm *FSM[T]) Dispatch(event Event, data interface{}) bool {
 		if !ok {
 			continue
 		}
-		if transition.guard != nil && !transition.guard(this, event, data) {
+		if transition.guard != nil && !transition.guard(fsm, event, data) {
 			continue
 		}
 		target, ok := fsm.states[transition.target]
@@ -231,17 +224,17 @@ func (fsm *FSM[T]) Dispatch(event Event, data interface{}) bool {
 			return true
 		}
 		if ok && state.exit != nil {
-			state.exit(this, event, data)
+			state.exit(fsm, event, data)
 		}
 		if transition.effect != nil {
-			transition.effect(this, event, data)
+			transition.effect(fsm, event, data)
 		}
 		if fsm.onTransition != nil {
-			fsm.onTransition(this, event, fsm.current, transition.target)
+			fsm.onTransition(fsm, event, fsm.current, transition.target)
 		}
 		fsm.current = transition.target
 		if ok && target.enter != nil {
-			target.enter(this, event, data)
+			target.enter(fsm, event, data)
 		}
 		return true
 	}
