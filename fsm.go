@@ -42,13 +42,16 @@ func New(nodes ...PartialNode) *FSM {
 	return fsm
 }
 
-func Initial(id string) PartialNode {
+func Initial(id string, nodes ...PartialNode) PartialNode {
 	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
 		if _, ok := fsm.states[id]; !ok {
 			fsm.states[id] = &StateNode{}
 		}
 		fsm.initial = id
 		fsm.current = id
+		for _, node := range nodes {
+			node(fsm, nil, nil)
+		}
 	}
 }
 
