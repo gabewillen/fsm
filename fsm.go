@@ -18,7 +18,7 @@ type ActionNode struct {
 }
 
 func (node *ActionNode) Execute(ctx context.Context, event Event, data any) *ActionNode {
-	if node.execute == nil {
+	if node == nil || node.execute == nil {
 		return nil
 	}
 	node.execution.Add(1)
