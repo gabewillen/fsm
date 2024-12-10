@@ -1,6 +1,7 @@
 package fsm_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/gabewillen/fsm"
@@ -73,7 +74,7 @@ func TestEffect(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Effect(func(event fsm.Event, data interface{}) {
+			fsm.Effect(func(ctx context.Context, event fsm.Event, data interface{}) {
 				call = true
 			}),
 		),

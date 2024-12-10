@@ -1,35 +1,95 @@
 package fsm
 
 import (
-	"fmt"
+	"context"
+	"sync"
 )
 
 type Event string
 
-type Action func(Event, interface{})
-type Constraint func(Event, interface{}) bool
+type Action func(context.Context, Event, any)
+type Constraint func(Event, any) bool
+
+type ActionNode struct {
+	execute   Action
+	ctx       context.Context
+	execution sync.WaitGroup
+	terminate context.CancelFunc
+}
+
+func (node *ActionNode) Execute(ctx context.Context, event Event, data any) *ActionNode {
+	if node.execute == nil {
+		return nil
+	}
+	node.execution.Add(1)
+	node.ctx, node.terminate = context.WithCancel(ctx)
+	go func() {
+		node.execute(ctx, event, data)
+		node.execution.Done()
+	}()
+	return node
+}
+
+func (node *ActionNode) Wait() {
+	if node == nil {
+		return
+	}
+	node.execution.Wait()
+}
+
+func (node *ActionNode) Terminate() {
+	if node == nil || node.terminate == nil {
+		return
+	}
+	node.terminate()
+	node.execution.Wait()
+}
 
 type StateNode struct {
-	enter       Action
-	activity    Action
-	exit        Action
+	entry       *ActionNode
+	activity    *ActionNode
+	exit        *ActionNode
 	transitions []*TransitionNode
+}
+
+func (state *StateNode) enter(ctx context.Context, event Event, data any) {
+	if state == nil || state.entry == nil {
+		return
+	}
+	// execute entry action
+	state.entry.Execute(ctx, event, data)
+	// wait for entry action to complete
+	state.entry.Wait()
+	// execute activity action this runs in a goroutine
+	state.activity.Execute(ctx, event, data)
+}
+
+func (state *StateNode) leave(ctx context.Context, event Event, data any) {
+	if state == nil || state.exit == nil {
+		return
+	}
+	state.activity.Terminate()
+	state.exit.Execute(ctx, event, data)
+	state.exit.Wait()
 }
 
 type TransitionNode struct {
 	events []Event
 	guard  Constraint
-	effect Action
+	effect *ActionNode
 	target string
 }
 
 // FSM is a finite state machine.
 type FSM struct {
+	*StateNode
 	states       map[string]*StateNode
-	onDispatch   func(Event, interface{})
+	onDispatch   func(Event, any)
 	onTransition func(Event, string, string)
 	current      string
 	initial      string
+	mutex        sync.Mutex
+	ctx          context.Context
 }
 
 type PartialNode func(*FSM, *StateNode, *TransitionNode)
@@ -38,17 +98,17 @@ type PartialNode func(*FSM, *StateNode, *TransitionNode)
 func New(nodes ...PartialNode) *FSM {
 	fsm := &FSM{
 		states: map[string]*StateNode{},
+		mutex:  sync.Mutex{},
+		ctx:    context.Background(),
 	}
 	for _, partial := range nodes {
 		partial(fsm, nil, nil)
 	}
 	initial, ok := fsm.states[fsm.initial]
 	if !ok {
-		panic(fmt.Sprintf("initial state %s not found", fsm.initial))
+		return fsm
 	}
-	if initial.enter != nil {
-		initial.enter("", nil)
-	}
+	initial.enter(fsm.ctx, "", nil)
 	return fsm
 }
 
@@ -75,21 +135,27 @@ func State(id string, nodes ...PartialNode) PartialNode {
 	}
 }
 
-func Entry(fn func(event Event, data interface{})) PartialNode {
+func Entry(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		state.enter = fn
+		state.entry = &ActionNode{
+			execute: fn,
+		}
 	}
 }
 
 func Activity(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		state.activity = fn
+		state.activity = &ActionNode{
+			execute: fn,
+		}
 	}
 }
 
 func Exit(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		state.exit = fn
+		state.exit = &ActionNode{
+			execute: fn,
+		}
 	}
 }
 
@@ -166,7 +232,9 @@ func Effect(fn Action) PartialNode {
 		if transition == nil {
 			return
 		}
-		transition.effect = fn
+		transition.effect = &ActionNode{
+			execute: fn,
+		}
 	}
 }
 
@@ -198,7 +266,7 @@ func (f *FSM) OnTransition(fn func(Event, string, string)) {
 }
 
 // Exit sets a func that will be called when exiting any state.
-func (f *FSM) OnDispatch(fn func(Event, interface{})) {
+func (f *FSM) OnDispatch(fn func(Event, any)) {
 	f.onDispatch = fn
 }
 
@@ -214,11 +282,13 @@ func find[T any](slice []T, fn func(T) bool) (T, bool) {
 
 // Event send an Event to a machine, applying at most one transition.
 // true is returned if a transition has been applied, false otherwise.
-func (fsm *FSM) Dispatch(event Event, data interface{}) bool {
+func (fsm *FSM) Dispatch(event Event, data any) bool {
 	state, ok := fsm.states[fsm.current]
 	if !ok {
 		return false
 	}
+	fsm.mutex.Lock()
+	defer fsm.mutex.Unlock()
 	for _, transition := range state.transitions {
 		_, ok := find(transition.events, func(evt Event) bool {
 			return evt == event
@@ -233,18 +303,19 @@ func (fsm *FSM) Dispatch(event Event, data interface{}) bool {
 		if !ok {
 			return true
 		}
-		if ok && state.exit != nil {
-			state.exit(event, data)
+		if ok {
+			state.leave(fsm.ctx, event, data)
 		}
 		if transition.effect != nil {
-			transition.effect(event, data)
+			transition.effect.Execute(fsm.ctx, event, data)
+			transition.effect.Wait()
 		}
 		if fsm.onTransition != nil {
 			fsm.onTransition(event, fsm.current, transition.target)
 		}
 		fsm.current = transition.target
-		if ok && target.enter != nil {
-			target.enter(event, data)
+		if ok {
+			target.enter(fsm.ctx, event, data)
 		}
 		return true
 	}
