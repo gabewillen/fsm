@@ -47,7 +47,7 @@ func TestGuard(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Guard(func(fsm *fsm.FSM, event fsm.Event, data interface{}) bool {
+			fsm.Guard(func(fsm fsm.Interface, event fsm.Event, data interface{}) bool {
 				return check
 			}),
 		),
@@ -83,7 +83,7 @@ func TestEffect(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Effect(func(fsm *fsm.FSM, event fsm.Event, data interface{}) {
+			fsm.Effect(func(fsm fsm.Interface, event fsm.Event, data interface{}) {
 				call = true
 			}),
 		),
@@ -110,7 +110,7 @@ func TestOnTransition(t *testing.T) {
 		),
 	)
 	var calls int
-	f.OnTransition(func(fsm *fsm.FSM, event fsm.Event, source, target string) {
+	f.OnTransition(func(fsm fsm.Interface, event fsm.Event, source, target string) {
 		calls++
 	})
 	_ = f.Dispatch("foo", nil)
