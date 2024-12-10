@@ -136,7 +136,7 @@ type transition struct {
 	target string
 }
 
-type model struct {
+type Modeled struct {
 	*behavior
 	states          map[string]*state
 	current         string
@@ -150,18 +150,18 @@ type model struct {
 
 // FSM is a finite state machine.
 type FSM struct {
-	*model
+	*Modeled
 	ctx          context.Context
 	onDispatch   func(Event, any)
 	onTransition func(Event, string, string)
 }
 
-type PartialElement func(*model, *state, *transition)
+type PartialElement func(*Modeled, *state, *transition)
 
 // New creates a new finite state machine having the specified initial state.
-func New(context context.Context, stateMachineModel *model) *FSM {
+func New(context context.Context, stateMachineModel *Modeled) *FSM {
 	fsm := &FSM{
-		model: &model{
+		Modeled: &Modeled{
 			behavior: &behavior{
 				action:    stateMachineModel.behavior.action,
 				execution: sync.WaitGroup{},
@@ -173,13 +173,13 @@ func New(context context.Context, stateMachineModel *model) *FSM {
 		},
 		ctx: context,
 	}
-	fsm.model.behavior.execute(fsm, "", nil)
-	fsm.model.behavior.wait()
+	fsm.Modeled.behavior.execute(fsm, "", nil)
+	fsm.Modeled.behavior.wait()
 	return fsm
 }
 
 func Initial(id string, partialElements ...PartialElement) PartialElement {
-	return func(model *model, _ *state, _ *transition) {
+	return func(model *Modeled, _ *state, _ *transition) {
 		this, ok := model.states[id]
 		if !ok {
 			this = &state{
@@ -196,7 +196,7 @@ func Initial(id string, partialElements ...PartialElement) PartialElement {
 }
 
 func State(id string, partialElements ...PartialElement) PartialElement {
-	return func(model *model, _ *state, _ *transition) {
+	return func(model *Modeled, superState *state, _ *transition) {
 		this := &state{
 			name: id,
 		}
@@ -208,7 +208,7 @@ func State(id string, partialElements ...PartialElement) PartialElement {
 }
 
 func Entry(fn Action) PartialElement {
-	return func(model *model, state *state, _ *transition) {
+	return func(model *Modeled, state *state, _ *transition) {
 		state.entry = &behavior{
 			action: fn,
 		}
@@ -216,7 +216,7 @@ func Entry(fn Action) PartialElement {
 }
 
 func Activity(fn Action) PartialElement {
-	return func(model *model, state *state, _ *transition) {
+	return func(model *Modeled, state *state, _ *transition) {
 		state.activity = &behavior{
 			action: fn,
 		}
@@ -224,7 +224,7 @@ func Activity(fn Action) PartialElement {
 }
 
 func Exit(fn Action) PartialElement {
-	return func(model *model, state *state, _ *transition) {
+	return func(model *Modeled, state *state, _ *transition) {
 		state.exit = &behavior{
 			action: fn,
 		}
@@ -233,7 +233,7 @@ func Exit(fn Action) PartialElement {
 
 // Src defines the source States for a Transition.
 func Source(sources ...string) PartialElement {
-	return func(model *model, _ *state, transition *transition) {
+	return func(model *Modeled, _ *state, transition *transition) {
 		if transition == nil {
 			return
 		}
@@ -254,7 +254,7 @@ type Dispatchable interface {
 
 // On defines the Event that triggers a Transition.
 func On[E Dispatchable](events ...E) PartialElement {
-	return func(model *model, _ *state, transition *transition) {
+	return func(model *Modeled, _ *state, transition *transition) {
 		if transition == nil {
 			return
 		}
@@ -277,7 +277,7 @@ type Targetable interface {
 
 // Dst defines the new State the machine switches to after a Transition.
 func Target[T Targetable](target T) PartialElement {
-	return func(model *model, _ *state, transitionElement *transition) {
+	return func(model *Modeled, _ *state, transitionElement *transition) {
 		if transitionElement == nil {
 			return
 		}
@@ -296,7 +296,7 @@ func Target[T Targetable](target T) PartialElement {
 }
 
 func Choice(transitions ...PartialElement) PartialElement {
-	return func(model *model, _ *state, transitionElement *transition) {
+	return func(model *Modeled, _ *state, transitionElement *transition) {
 		for _, transition := range transitions {
 			transition(model, nil, transitionElement)
 		}
@@ -305,7 +305,7 @@ func Choice(transitions ...PartialElement) PartialElement {
 
 // Check is an external condition that allows a Transition only if fn returns true.
 func Guard(fn Constraint) PartialElement {
-	return func(model *model, _ *state, transitionElement *transition) {
+	return func(model *Modeled, _ *state, transitionElement *transition) {
 		if transitionElement == nil {
 			return
 		}
@@ -315,14 +315,14 @@ func Guard(fn Constraint) PartialElement {
 	}
 }
 
-func Submachine(submachine *model) PartialElement {
-	return func(modelPtr *model, statePtr *state, _ *transition) {
+func Submachine(submachine *Modeled) PartialElement {
+	return func(modelPtr *Modeled, statePtr *state, _ *transition) {
 		if statePtr == nil {
 			slog.Warn("Submachine called on nil state")
 			return
 		}
 		statePtr.submachine = &FSM{
-			model: &model{
+			Modeled: &Modeled{
 				behavior: &behavior{
 					mutex: modelPtr.behavior.mutex,
 				},
@@ -337,7 +337,7 @@ func Submachine(submachine *model) PartialElement {
 
 // // Call defines a function that is called when a Transition occurs.
 func Effect(fn Action) PartialElement {
-	return func(model *model, _ *state, transitionElement *transition) {
+	return func(model *Modeled, _ *state, transitionElement *transition) {
 		if transitionElement == nil {
 			return
 		}
@@ -348,7 +348,7 @@ func Effect(fn Action) PartialElement {
 }
 
 func Transition(nodes ...PartialElement) PartialElement {
-	return func(model *model, stateElement *state, _ *transition) {
+	return func(model *Modeled, stateElement *state, _ *transition) {
 		transition := &transition{}
 		for _, node := range nodes {
 			node(model, nil, transition)
@@ -395,9 +395,6 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 	if fsm == nil {
 		return false
 	}
-	// if fsm.submachine != nil {
-	// 	return fsm.submachine.Dispatch(event, data)
-	// }
 	state, ok := fsm.states[fsm.current]
 	if !ok {
 		return false
@@ -442,8 +439,8 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 	return false
 }
 
-func Model(elements ...PartialElement) *model {
-	newModel := &model{
+func Model(elements ...PartialElement) *Modeled {
+	newModel := &Modeled{
 		behavior: &behavior{
 			mutex: &sync.Mutex{},
 		},

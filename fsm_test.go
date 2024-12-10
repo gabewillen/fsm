@@ -43,6 +43,10 @@ func TestFSM(t *testing.T) {
 	}
 }
 
+type Foo struct {
+	*fsm.FSM
+}
+
 func TestGuard(t *testing.T) {
 	check := false
 	model := fsm.Model(
@@ -57,7 +61,7 @@ func TestGuard(t *testing.T) {
 			}),
 		),
 	)
-	f := fsm.New(context.Background(), model)
+	f := Foo{fsm.New(context.Background(), model)}
 	res := f.Dispatch("foo", nil)
 	if res || f.State().Name() == "bar" {
 		t.Error("Transition should not happen because of Check")
@@ -224,4 +228,17 @@ func TestSubmachine(t *testing.T) {
 		return
 	}
 
+}
+
+func TestNestedStates(t *testing.T) {
+	model := fsm.Model(
+		fsm.Initial("a/b/c"),
+		fsm.State("a", fsm.State("b", fsm.State("c"))),
+		fsm.State("bar"),
+	)
+	f := fsm.New(context.Background(), model)
+	if f.State().Name() != "a/b/c" {
+		t.Error("fsm state is not initial state a/b/c")
+		return
+	}
 }
