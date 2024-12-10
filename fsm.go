@@ -53,7 +53,7 @@ type StateNode struct {
 }
 
 func (state *StateNode) enter(ctx context.Context, event Event, data any) {
-	if state == nil || state.entry == nil {
+	if state == nil {
 		return
 	}
 	// execute entry action
@@ -65,7 +65,7 @@ func (state *StateNode) enter(ctx context.Context, event Event, data any) {
 }
 
 func (state *StateNode) leave(ctx context.Context, event Event, data any) {
-	if state == nil || state.exit == nil {
+	if state == nil {
 		return
 	}
 	state.activity.Terminate()
