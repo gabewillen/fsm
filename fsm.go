@@ -5,51 +5,66 @@ import (
 	"sync"
 )
 
-type Event string
+// required for type guard
+type Node interface{}
 
+// type Event interface {
+// 	Node
+// 	Kind() string
+// }
+
+// type EventNode struct {
+// 	kind string
+// }
+
+//	func (node *EventNode) Kind() string {
+//		return node.kind
+//	}
+type Event string
 type Action func(context.Context, Event, any)
 type Constraint func(Event, any) bool
 
-type ActionNode struct {
-	execute   Action
+type BehaviorNode struct {
+	invoke    Action
 	ctx       context.Context
 	execution sync.WaitGroup
-	terminate context.CancelFunc
+	cancel    context.CancelFunc
 }
 
-func (node *ActionNode) Execute(ctx context.Context, event Event, data any) *ActionNode {
-	if node == nil || node.execute == nil {
+func (node *BehaviorNode) execute(ctx context.Context, event Event, data any) *BehaviorNode {
+	if node == nil || node.invoke == nil {
 		return nil
 	}
 	node.execution.Add(1)
-	node.ctx, node.terminate = context.WithCancel(ctx)
+	node.ctx, node.cancel = context.WithCancel(ctx)
 	go func() {
-		node.execute(node.ctx, event, data)
+		node.invoke(node.ctx, event, data)
 		node.execution.Done()
 	}()
 	return node
 }
 
-func (node *ActionNode) Wait() {
+func (node *BehaviorNode) wait() {
 	if node == nil {
 		return
 	}
 	node.execution.Wait()
 }
 
-func (node *ActionNode) Terminate() {
-	if node == nil || node.terminate == nil {
+func (node *BehaviorNode) terminate() {
+	if node == nil || node.cancel == nil {
 		return
 	}
-	node.terminate()
+	node.cancel()
 	node.execution.Wait()
 }
 
 type StateNode struct {
-	entry       *ActionNode
-	activity    *ActionNode
-	exit        *ActionNode
+	entry       *BehaviorNode
+	activity    *BehaviorNode
+	exit        *BehaviorNode
 	transitions []*TransitionNode
+	submachine  *FSM
 }
 
 func (state *StateNode) enter(ctx context.Context, event Event, data any) {
@@ -57,53 +72,49 @@ func (state *StateNode) enter(ctx context.Context, event Event, data any) {
 		return
 	}
 	// execute entry action
-	state.entry.Execute(ctx, event, data)
+	state.entry.execute(ctx, event, data)
 	// wait for entry action to complete
-	state.entry.Wait()
+	state.entry.wait()
 	// execute activity action this runs in a goroutine
-	state.activity.Execute(ctx, event, data)
+	state.activity.execute(ctx, event, data)
+	if state.submachine != nil {
+		state.submachine.execute(ctx, event, data)
+	}
 }
 
 func (state *StateNode) leave(ctx context.Context, event Event, data any) {
 	if state == nil {
 		return
 	}
-	state.activity.Terminate()
-	state.exit.Execute(ctx, event, data)
-	state.exit.Wait()
+	state.activity.terminate()
+	state.exit.execute(ctx, event, data)
+	state.exit.wait()
 }
 
 type TransitionNode struct {
 	events []Event
 	guard  Constraint
-	effect *ActionNode
+	effect *BehaviorNode
 	target string
 }
 
 // FSM is a finite state machine.
 type FSM struct {
 	*StateNode
+	*BehaviorNode
 	states       map[string]*StateNode
 	onDispatch   func(Event, any)
 	onTransition func(Event, string, string)
 	current      string
 	initial      string
-	mutex        sync.Mutex
-	ctx          context.Context
+	mutex        *sync.Mutex
 }
 
 type PartialNode func(*FSM, *StateNode, *TransitionNode)
 
 // New creates a new finite state machine having the specified initial state.
 func New(nodes ...PartialNode) *FSM {
-	fsm := &FSM{
-		states: map[string]*StateNode{},
-		mutex:  sync.Mutex{},
-		ctx:    context.Background(),
-	}
-	for _, partial := range nodes {
-		partial(fsm, nil, nil)
-	}
+	fsm := Model(nodes...)
 	initial, ok := fsm.states[fsm.initial]
 	if !ok {
 		return fsm
@@ -139,24 +150,24 @@ func State(id string, nodes ...PartialNode) PartialNode {
 
 func Entry(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		state.entry = &ActionNode{
-			execute: fn,
+		state.entry = &BehaviorNode{
+			invoke: fn,
 		}
 	}
 }
 
 func Activity(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		state.activity = &ActionNode{
-			execute: fn,
+		state.activity = &BehaviorNode{
+			invoke: fn,
 		}
 	}
 }
 
 func Exit(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		state.exit = &ActionNode{
-			execute: fn,
+		state.exit = &BehaviorNode{
+			invoke: fn,
 		}
 	}
 }
@@ -178,13 +189,26 @@ func Source(source ...string) PartialNode {
 	}
 }
 
+type Dispatchable interface {
+	string | Node | PartialNode
+}
+
 // On defines the Event that triggers a Transition.
-func On(events ...Event) PartialNode {
+func On[E Dispatchable](events ...E) PartialNode {
 	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
 		if transition == nil {
 			return
 		}
-		transition.events = append(transition.events, events...)
+		for _, evt := range events {
+			switch any(evt).(type) {
+			case string:
+				transition.events = append(transition.events, Event(any(evt).(string)))
+			// case Event:
+			// 	transition.events = append(transition.events, &EventNode{kind: any(evt).(Event).Kind()})
+			case PartialNode:
+				any(evt).(PartialNode)(fsm, state, transition)
+			}
+		}
 	}
 }
 
@@ -228,14 +252,27 @@ func Guard(fn Constraint) PartialNode {
 	}
 }
 
+func Submachine(id string, submachine *FSM) PartialNode {
+	partialState := State(id)
+	return func(fsm *FSM, _ *StateNode, _ *TransitionNode) {
+		partialState(fsm, nil, nil)
+		state := fsm.states[id]
+		state.submachine = &FSM{
+			BehaviorNode: &BehaviorNode{},
+			states:       fsm.states,
+			mutex:        fsm.mutex,
+		}
+	}
+}
+
 // // Call defines a function that is called when a Transition occurs.
 func Effect(fn Action) PartialNode {
 	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
 		if transition == nil {
 			return
 		}
-		transition.effect = &ActionNode{
-			execute: fn,
+		transition.effect = &BehaviorNode{
+			invoke: fn,
 		}
 	}
 }
@@ -285,6 +322,12 @@ func find[T any](slice []T, fn func(T) bool) (T, bool) {
 // Event send an Event to a machine, applying at most one transition.
 // true is returned if a transition has been applied, false otherwise.
 func (fsm *FSM) Dispatch(event Event, data any) bool {
+	if fsm == nil {
+		return false
+	}
+	if fsm.submachine != nil {
+		return fsm.submachine.Dispatch(event, data)
+	}
 	state, ok := fsm.states[fsm.current]
 	if !ok {
 		return false
@@ -309,8 +352,8 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 			state.leave(fsm.ctx, event, data)
 		}
 		if transition.effect != nil {
-			transition.effect.Execute(fsm.ctx, event, data)
-			transition.effect.Wait()
+			transition.effect.execute(fsm.ctx, event, data)
+			transition.effect.wait()
 		}
 		if fsm.onTransition != nil {
 			fsm.onTransition(event, fsm.current, transition.target)
@@ -322,4 +365,21 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 		return true
 	}
 	return false
+}
+
+func Model(nodes ...PartialNode) *FSM {
+	fsm := &FSM{
+		StateNode: &StateNode{
+			transitions: []*TransitionNode{},
+		},
+		BehaviorNode: &BehaviorNode{
+			ctx: context.Background(),
+		},
+		states: map[string]*StateNode{},
+		mutex:  &sync.Mutex{},
+	}
+	for _, partial := range nodes {
+		partial(fsm, nil, nil)
+	}
+	return fsm
 }

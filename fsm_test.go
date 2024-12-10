@@ -24,6 +24,7 @@ func TestFSM(t *testing.T) {
 			fsm.Target("bar"),
 		),
 	)
+	f.Start()
 	if f.State() != "foo" {
 		t.Error("Initial state is not foo")
 		return
@@ -123,7 +124,7 @@ func TestActivityTermination(t *testing.T) {
 	wg.Add(1)
 	activityRunning := false
 
-	f := fsm.New(
+	model := fsm.FSM(
 		fsm.Initial("foo",
 			fsm.Entry(func(ctx context.Context, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
@@ -147,7 +148,7 @@ func TestActivityTermination(t *testing.T) {
 			fsm.Target("bar"),
 		),
 	)
-
+	f := fsm.New(model)
 	// Wait for activity to start
 	wg.Wait()
 	t.Log("Activity started")
@@ -164,4 +165,8 @@ func TestActivityTermination(t *testing.T) {
 	if activityRunning {
 		t.Error("Activity should have been terminated")
 	}
+}
+
+func TestSubmachine(t *testing.T) {
+
 }
