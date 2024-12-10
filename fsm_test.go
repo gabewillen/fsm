@@ -2,7 +2,9 @@ package fsm_test
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gabewillen/fsm"
 )
@@ -113,5 +115,53 @@ func TestOnTransition(t *testing.T) {
 	if calls != 2 {
 		t.Error("OnTransition func has not been called")
 		return
+	}
+}
+
+func TestActivityTermination(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	activityRunning := false
+
+	f := fsm.New(
+		fsm.Initial("foo",
+			fsm.Entry(func(ctx context.Context, event fsm.Event, data interface{}) {
+				t.Log("Entry action started")
+			}),
+			fsm.Activity(func(ctx context.Context, event fsm.Event, data interface{}) {
+				t.Log("Activity started")
+				activityRunning = true
+				wg.Done()
+				<-ctx.Done() // Block until context cancelled
+				activityRunning = false
+			}),
+		),
+		fsm.State("bar",
+			fsm.Entry(func(ctx context.Context, event fsm.Event, data interface{}) {
+				t.Log("Entry action started")
+			}),
+		),
+		fsm.Transition(
+			fsm.On("next"),
+			fsm.Source("foo"),
+			fsm.Target("bar"),
+		),
+	)
+
+	// Wait for activity to start
+	wg.Wait()
+	t.Log("Activity started")
+	if !activityRunning {
+		t.Error("Activity should be running")
+	}
+
+	// Transition should terminate activity
+	f.Dispatch("next", nil)
+	t.Log("Transition dispatched")
+	// Give activity goroutine time to clean up
+	time.Sleep(100 * time.Millisecond)
+
+	if activityRunning {
+		t.Error("Activity should have been terminated")
 	}
 }

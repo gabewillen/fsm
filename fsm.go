@@ -24,7 +24,7 @@ func (node *ActionNode) Execute(ctx context.Context, event Event, data any) *Act
 	node.execution.Add(1)
 	node.ctx, node.terminate = context.WithCancel(ctx)
 	go func() {
-		node.execute(ctx, event, data)
+		node.execute(node.ctx, event, data)
 		node.execution.Done()
 	}()
 	return node
@@ -113,14 +113,16 @@ func New(nodes ...PartialNode) *FSM {
 }
 
 func Initial(id string, nodes ...PartialNode) PartialNode {
-	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
-		if _, ok := fsm.states[id]; !ok {
-			fsm.states[id] = &StateNode{}
+	return func(fsm *FSM, _ *StateNode, _ *TransitionNode) {
+		state, ok := fsm.states[id]
+		if !ok {
+			state = &StateNode{}
+			fsm.states[id] = state
 		}
 		fsm.initial = id
 		fsm.current = id
 		for _, node := range nodes {
-			node(fsm, nil, nil)
+			node(fsm, state, nil)
 		}
 	}
 }
