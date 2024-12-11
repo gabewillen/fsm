@@ -1,6 +1,8 @@
 package fsm_test
 
 import (
+	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -9,7 +11,7 @@ import (
 )
 
 func TestFSM(t *testing.T) {
-	f := fsm.New(
+	model := fsm.Model(
 		fsm.Initial("foo"),
 		fsm.State(
 			"foo",
@@ -23,7 +25,9 @@ func TestFSM(t *testing.T) {
 			fsm.Target("bar"),
 		),
 	)
-	if f.State() != "foo" {
+	f := fsm.New(context.Background(), model)
+	time.Sleep(100 * time.Millisecond)
+	if f.State().Name() != "foo" {
 		t.Error("Initial state is not foo")
 		return
 	}
@@ -31,43 +35,89 @@ func TestFSM(t *testing.T) {
 	if !res {
 		t.Error("Event returned false")
 	}
-	if f.State() != "bar" {
+	if f.State().Name() != "bar" {
 		t.Error("Bad target state")
 	}
 	f.Reset()
-	if f.State() != "foo" {
+	if f.State().Name() != "" {
 		t.Error("Bad state after Reset")
 	}
 }
 
+type Foo struct {
+	*fsm.FSM
+}
+
 func TestGuard(t *testing.T) {
 	check := false
-	f := fsm.New(
+	model := fsm.Model(
 		fsm.Initial("foo"),
 		fsm.State("foo"),
 		fsm.Transition(
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Guard(func(event fsm.Event, data interface{}) bool {
+			fsm.Guard(func(ctx fsm.Context, event fsm.Event, data interface{}) bool {
 				return check
 			}),
 		),
 	)
+	f := Foo{fsm.New(context.Background(), model)}
+	time.Sleep(100 * time.Millisecond)
 	res := f.Dispatch("foo", nil)
-	if res || f.State() == "bar" {
+	if res || f.State().Name() == "bar" {
 		t.Error("Transition should not happen because of Check")
 	}
 	check = true
 	res = f.Dispatch("foo", nil)
-	if !res && f.State() != "bar" {
+	if !res && f.State().Name() != "bar" {
 		t.Error("Transition should happen thanks to Check")
 	}
 }
 
+// func TestChoice(t *testing.T) {
+// 	check := false
+// 	model := fsm.Model(
+// 		fsm.Initial("foo"),
+// 		fsm.State("foo"),
+// 		fsm.State("bar"),
+// 		fsm.State("baz"),
+// 		fsm.Transition(
+// 			fsm.On("foo"),
+// 			fsm.Source("foo"),
+// 			fsm.Choice(
+// 				fsm.Transition(
+// 					fsm.Target("bar"),
+// 					fsm.Guard(func(ctx fsm.Context, event fsm.Event, data interface{}) bool {
+// 						return check
+// 					}),
+// 				),
+// 				fsm.Transition(
+// 					fsm.Target("baz"),
+// 					fsm.Guard(func(ctx fsm.Context, event fsm.Event, data interface{}) bool {
+// 						return !check
+// 					}),
+// 				),
+// 			),
+// 		),
+// 	)
+// 	f := fsm.New(context.Background(), model)
+// 	res := f.Dispatch("foo", nil)
+// 	if !res || f.State().Name() != "baz" {
+// 		t.Error("Should transition to baz when check is false")
+// 	}
+
+// 	check = true
+// 	f.Reset()
+// 	res = f.Dispatch("foo", nil)
+// 	if !res || f.State().Name() != "bar" {
+// 		t.Error("Should transition to bar when check is true")
+// 	}
+// }
+
 func TestEffect(t *testing.T) {
 	call := false
-	f := fsm.New(
+	model := fsm.Model(
 		fsm.Initial("foo"),
 		fsm.State("foo"),
 		fsm.State("bar"),
@@ -75,11 +125,13 @@ func TestEffect(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Effect(func(channel chan bool, event fsm.Event, data interface{}) {
+			fsm.Effect(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				call = true
 			}),
 		),
 	)
+	f := fsm.New(context.Background(), model)
+	time.Sleep(100 * time.Millisecond)
 	_ = f.Dispatch("foo", nil)
 	if !call {
 		t.Error("Call should have been called")
@@ -87,7 +139,7 @@ func TestEffect(t *testing.T) {
 }
 
 func TestOnTransition(t *testing.T) {
-	f := fsm.New(
+	model := fsm.Model(
 		fsm.Initial("foo"),
 		fsm.State("foo"),
 		fsm.Transition(
@@ -101,18 +153,19 @@ func TestOnTransition(t *testing.T) {
 			fsm.Target("foo"),
 		),
 	)
+	f := fsm.New(context.Background(), model)
 	var calls int
-	f.OnTransition(func(event fsm.Event, source, target string) {
+	f.AddListener(func(trace fsm.Trace) {
 		calls++
 	})
 	_ = f.Dispatch("foo", nil)
-	if calls != 1 {
-		t.Error("OnTransition func has not been called")
+	if calls != 2 {
+		t.Error("OnTransition func has not been called", "calls", calls)
 		return
 	}
 	_ = f.Dispatch("bar", nil)
-	if calls != 2 {
-		t.Error("OnTransition func has not been called")
+	if calls != 3 {
+		t.Error("OnTransition func has not been called", "calls", calls)
 		return
 	}
 }
@@ -122,30 +175,23 @@ func TestActivityTermination(t *testing.T) {
 	wg.Add(1)
 	activityRunning := false
 
-	f := fsm.New(
+	model := fsm.Model(
 		fsm.Initial("foo",
-			fsm.Entry(func(ctx chan bool, event fsm.Event, data interface{}) {
+			fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
 			}),
-			fsm.Activity(func(ctx chan bool, event fsm.Event, data interface{}) {
+			fsm.Activity(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				t.Log("Activity started")
 				activityRunning = true
 				wg.Done()
-				<-ctx
-				// lock until context cancelled
+				<-ctx.Done() // Block until context cancelled
 				activityRunning = false
-			}),
-			fsm.Exit(func(ctx chan bool, event fsm.Event, data interface{}) {
-				t.Log("Exit action started")
 			}),
 		),
 		fsm.State("bar",
-			fsm.Entry(func(ctx chan bool, event fsm.Event, data interface{}) {
+			fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
 			}),
-			// Add empty activity and exit actions to avoid nil pointers
-			fsm.Activity(nil),
-			fsm.Exit(nil),
 		),
 		fsm.Transition(
 			fsm.On("next"),
@@ -153,7 +199,7 @@ func TestActivityTermination(t *testing.T) {
 			fsm.Target("bar"),
 		),
 	)
-
+	f := fsm.New(context.Background(), model)
 	// Wait for activity to start
 	wg.Wait()
 	t.Log("Activity started")
@@ -172,27 +218,74 @@ func TestActivityTermination(t *testing.T) {
 	}
 }
 
-// func BenchmarkFSM(b *testing.B) {
-// 	f := fsm.New(
-// 		fsm.Initial("start",
-// 			fsm.Entry(nil),
-// 			fsm.Activity(nil),
-// 			fsm.Exit(nil),
-// 			fsm.Transition(
-// 				fsm.On("next"),
-// 				fsm.Target("end"),
-// 			),
-// 		),
-// 		fsm.State("end",
-// 			fsm.Entry(nil),
-// 			fsm.Activity(nil),
-// 			fsm.Exit(nil),
-// 		),
-// 	)
+func TestSubmachine(t *testing.T) {
+	a := fsm.Model(
+		fsm.Initial("foo"),
+		fsm.State(
+			"foo",
+		),
+		fsm.State(
+			"bar",
+		),
+		fsm.Transition(
+			fsm.On("foo"),
+			fsm.Source("foo"),
+			fsm.Target("bar"),
+		),
+	)
+	model := fsm.Model(
+		fsm.Initial("a"),
+		fsm.State("a", fsm.Submachine(a)),
+		fsm.State("b"),
+		fsm.Transition(
+			fsm.On("a"),
+			fsm.Source("a"),
+			fsm.Target("b"),
+		),
+	)
 
-// 	b.ResetTimer()
-// 	for i := 0; i < b.N; i++ {
-// 		f.Dispatch("next", nil)
-// 		f.Reset()
+	slog.Info("Model", "model", model)
+	f := fsm.New(context.Background(), model)
+	time.Sleep(200 * time.Millisecond)
+	submachine := f.State().Submachine()
+	if submachine == nil {
+		t.Error("Submachine is nil")
+		return
+	}
+	slog.Info("Submachine", "submachine", submachine)
+	submachine.AddListener(func(trace fsm.Trace) {
+		t.Log("Submachine transition", trace)
+	})
+	time.Sleep(500 * time.Millisecond)
+	if submachine.State().Name() != "foo" {
+		slog.Error("bad submachine state", "state", submachine.State())
+		t.Error("bad submachine state", submachine.State().Name(), "expected", "foo")
+		return
+	}
+
+	f.Dispatch("foo", nil)
+	t.Log("submachine", f.State().Submachine().State().Name())
+	if f.State().Submachine().State().Name() != "bar" {
+		t.Error("Bad state")
+		return
+	}
+	f.Dispatch("a", nil)
+	if f.State().Name() != "b" {
+		t.Error("failed to transition from a to b")
+		return
+	}
+
+}
+
+// func TestNestedStates(t *testing.T) {
+// 	model := fsm.Model(
+// 		fsm.Initial("a/b/c"),
+// 		fsm.State("a", fsm.State("b", fsm.State("c"))),
+// 		fsm.State("bar"),
+// 	)
+// 	f := fsm.New(context.Background(), model)
+// 	if f.State().Name() != "a/b/c" {
+// 		t.Error("fsm state is not initial state a/b/c")
+// 		return
 // 	}
 // }

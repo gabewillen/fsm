@@ -1,274 +1,412 @@
 package fsm
 
 import (
+	"context"
+	"log/slog"
+	"path"
 	"sync"
 )
 
-type Event string
+// required for type guard
+type node interface{}
 
-type Action func(chan bool, Event, any)
-type Constraint func(Event, any) bool
-
-type ActionNode struct {
-	execute   Action
-	cancel    chan bool
-	execution sync.WaitGroup
+type Context struct {
+	*FSM
+	context.Context
 }
 
-func (node *ActionNode) Execute(event Event, data any) *ActionNode {
-	if node == nil || node.execute == nil {
+//	type Event interface {
+//		Node
+//		Kind() string
+//	}
+
+// type EventNode struct {
+// 	kind string
+// }
+
+//	func (node *EventNode) Kind() string {
+//		return node.kind
+//	}
+type Event string
+type Action func(Context, Event, any)
+type Constraint func(Context, Event, any) bool
+
+type constraint struct {
+	expr Constraint
+}
+
+func (element *constraint) evaluate(fsm *FSM, event Event, data any) bool {
+	if element == nil {
+		return true
+	}
+	return element.expr(Context{FSM: fsm, Context: fsm.ctx}, event, data)
+}
+
+type behavior struct {
+	action    Action
+	execution sync.WaitGroup
+	cancel    context.CancelFunc
+	mutex     *sync.Mutex
+}
+
+func (element *behavior) execute(fsm *FSM, event Event, data any) *behavior {
+	if element == nil || element.action == nil {
 		return nil
 	}
-	node.execution.Add(1)
+	element.execution.Add(1)
+	var ctx context.Context
+	ctx, element.cancel = context.WithCancel(fsm.ctx)
 	go func() {
-		node.execute(node.cancel, event, data)
-		node.execution.Done()
+		element.action(Context{FSM: fsm, Context: ctx}, event, data)
+		element.execution.Done()
 	}()
-	return node
+	return element
 }
 
-func (node *ActionNode) Wait() {
+func (node *behavior) wait() {
 	if node == nil {
 		return
 	}
 	node.execution.Wait()
 }
 
-func (node *ActionNode) Terminate() {
+func (node *behavior) terminate() {
 	if node == nil || node.cancel == nil {
 		return
 	}
-	node.cancel <- true
+	node.cancel()
 	node.execution.Wait()
 }
 
-type StateNode struct {
-	entry       *ActionNode
-	activity    *ActionNode
-	exit        *ActionNode
-	transitions []*TransitionNode
+type state struct {
+	name        string
+	entry       *behavior
+	activity    *behavior
+	exit        *behavior
+	transitions []*transition
+	submachine  *FSM
 }
 
-func (state *StateNode) enter(event Event, data any) {
-	if state == nil {
+func (statePtr *state) enter(fsm *FSM, event Event, data any) {
+	if statePtr == nil {
 		return
 	}
 	// execute entry action
-	state.entry.Execute(event, data)
+	statePtr.entry.execute(fsm, event, data)
 	// wait for entry action to complete
-	state.entry.Wait()
+	statePtr.entry.wait()
 	// execute activity action this runs in a goroutine
-	state.activity.Execute(event, data)
+	statePtr.activity.execute(fsm, event, data)
+	if statePtr.submachine != nil {
+		statePtr.submachine.ctx = fsm.ctx
+		statePtr.submachine.execute(statePtr.submachine, event, data)
+		statePtr.submachine.wait()
+	}
 }
 
-func (state *StateNode) leave(event Event, data any) {
-	if state == nil {
+func (statePtr *state) leave(fsm *FSM, event Event, data any) {
+	if statePtr == nil {
 		return
 	}
-	state.activity.Terminate()
-	state.exit.Execute(event, data)
-	state.exit.Wait()
+	if statePtr.submachine != nil {
+		statePtr.submachine.terminate()
+		statePtr.submachine.Reset()
+	}
+	statePtr.activity.terminate()
+	statePtr.exit.execute(fsm, event, data)
+	statePtr.exit.wait()
+
 }
 
-type TransitionNode struct {
+func (element *state) Name() string {
+	if element == nil {
+		return ""
+	}
+	return element.name
+}
+
+func (element *state) Submachine() *FSM {
+	if element == nil {
+		return nil
+	}
+	return element.submachine
+}
+
+type transition struct {
 	events []Event
-	guard  Constraint
-	effect *ActionNode
+	guard  *constraint
+	effect *behavior
 	target string
+	source string
+}
+
+type Modeled struct {
+	*behavior
+	states          map[string]*state
+	current         string
+	submachineState *state
+}
+
+// type model struct {
+// 	*statemachine
+// }
+
+type Trace struct {
+	Kind         string
+	Event        string
+	CurrentState string
+	TargetState  string
+	Data         any
 }
 
 // FSM is a finite state machine.
 type FSM struct {
-	*StateNode
-	states       map[string]*StateNode
-	onDispatch   func(Event, any)
-	onTransition func(Event, string, string)
-	current      string
-	initial      string
-	mutex        sync.Mutex
+	*Modeled
+	ctx       context.Context
+	listeners map[int]func(Trace)
 }
 
-type PartialNode func(*FSM, *StateNode, *TransitionNode)
+type PartialElement func(*Modeled, *state, *transition)
 
 // New creates a new finite state machine having the specified initial state.
-func New(nodes ...PartialNode) *FSM {
+func New(context context.Context, stateMachineModel *Modeled) *FSM {
 	fsm := &FSM{
-		states: map[string]*StateNode{},
-		mutex:  sync.Mutex{},
+		Modeled: &Modeled{
+			behavior: &behavior{
+				action:    stateMachineModel.behavior.action,
+				execution: sync.WaitGroup{},
+				mutex:     &sync.Mutex{},
+			},
+			states:  stateMachineModel.states,
+			current: stateMachineModel.current,
+		},
+		ctx:       context,
+		listeners: map[int]func(Trace){},
 	}
-	for _, partial := range nodes {
-		partial(fsm, nil, nil)
-	}
-	initial, ok := fsm.states[fsm.initial]
-	if !ok {
-		return fsm
-	}
-	initial.enter("", nil)
+	fsm.Modeled.behavior.execute(fsm, "", nil)
+	// go fsm.Dispatch("", nil)
 	return fsm
 }
 
-func Initial(id string, nodes ...PartialNode) PartialNode {
-	return func(fsm *FSM, _ *StateNode, _ *TransitionNode) {
-		state, ok := fsm.states[id]
+func Initial(id string, partialElements ...PartialElement) PartialElement {
+	return func(model *Modeled, _ *state, _ *transition) {
+		initial, ok := model.states[""]
 		if !ok {
-			state = &StateNode{}
-			fsm.states[id] = state
+			slog.Warn("No initial state found")
+			return
 		}
-		fsm.initial = id
-		fsm.current = id
-		for _, node := range nodes {
-			node(fsm, state, nil)
+		target, ok := model.states[id]
+		if !ok {
+			target = &state{
+				name:        id,
+				transitions: []*transition{},
+			}
+			model.states[id] = target
+		}
+		transition := &transition{
+			events: []Event{},
+			target: id,
+		}
+		for _, partial := range partialElements {
+			partial(model, target, transition)
+		}
+		initial.transitions = append(initial.transitions, transition)
+	}
+}
+
+func State(id string, partialElements ...PartialElement) PartialElement {
+	return func(model *Modeled, _ *state, _ *transition) {
+		this, ok := model.states[id]
+		if !ok {
+			this = &state{
+				name:        id,
+				transitions: []*transition{},
+			}
+			model.states[id] = this
+		}
+		for _, partial := range partialElements {
+			partial(model, this, nil)
 		}
 	}
 }
 
-func State(id string, nodes ...PartialNode) PartialNode {
-	return func(fsm *FSM, _ *StateNode, _ *TransitionNode) {
-		state := &StateNode{}
-		for _, node := range nodes {
-			node(fsm, state, nil)
-		}
-		fsm.states[id] = state
-	}
-}
-
-func Entry(fn Action) PartialNode {
-	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		state.entry = &ActionNode{
-			execute: fn,
-			cancel:  make(chan bool, 1),
+func Entry(fn Action) PartialElement {
+	return func(model *Modeled, state *state, _ *transition) {
+		state.entry = &behavior{
+			action: fn,
 		}
 	}
 }
 
-func Activity(fn Action) PartialNode {
-	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		state.activity = &ActionNode{
-			execute: fn,
-			cancel:  make(chan bool, 1),
+func Activity(fn Action) PartialElement {
+	return func(model *Modeled, state *state, _ *transition) {
+		state.activity = &behavior{
+			action: fn,
 		}
 	}
 }
 
-func Exit(fn Action) PartialNode {
-	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		state.exit = &ActionNode{
-			execute: fn,
-			cancel:  make(chan bool, 1),
+func Exit(fn Action) PartialElement {
+	return func(model *Modeled, state *state, _ *transition) {
+		state.exit = &behavior{
+			action: fn,
 		}
 	}
 }
 
 // Src defines the source States for a Transition.
-func Source(source ...string) PartialNode {
-	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
-		if transition == nil {
+func Source(sources ...string) PartialElement {
+	return func(model *Modeled, _ *state, transitionPtr *transition) {
+		if transitionPtr == nil {
 			return
 		}
-		for _, src := range source {
-			state, ok := fsm.states[src]
+		for _, src := range sources {
+			source, ok := model.states[src]
 			if !ok {
-				state = &StateNode{}
-				fsm.states[src] = state
+				source = &state{
+					name:        src,
+					transitions: []*transition{},
+				}
+				model.states[src] = source
 			}
-			state.transitions = append(state.transitions, transition)
+			source.transitions = append(source.transitions, transitionPtr)
 		}
 	}
 }
 
+type Dispatchable interface {
+	string | node | PartialElement
+}
+
 // On defines the Event that triggers a Transition.
-func On(events ...Event) PartialNode {
-	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
+func On[E Dispatchable](events ...E) PartialElement {
+	return func(model *Modeled, _ *state, transition *transition) {
 		if transition == nil {
 			return
 		}
-		transition.events = append(transition.events, events...)
+		for _, evt := range events {
+			switch any(evt).(type) {
+			case string:
+				transition.events = append(transition.events, Event(any(evt).(string)))
+			case Event:
+				transition.events = append(transition.events, any(evt).(Event))
+			case PartialElement:
+				any(evt).(PartialElement)(model, nil, transition)
+			}
+		}
 	}
 }
 
 type Targetable interface {
-	string | PartialNode
+	string | PartialElement
 }
 
 // Dst defines the new State the machine switches to after a Transition.
-func Target[T Targetable](target T) PartialNode {
-	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
-		if transition == nil {
+func Target[T Targetable](target T) PartialElement {
+	return func(model *Modeled, _ *state, transitionElement *transition) {
+		if transitionElement == nil {
 			return
 		}
 		switch target := any(target).(type) {
 		case string:
-			if _, ok := fsm.states[target]; !ok {
-				fsm.states[target] = &StateNode{}
+			if _, ok := model.states[target]; !ok {
+				model.states[target] = &state{
+					name:        target,
+					transitions: []*transition{},
+				}
 			}
-			transition.target = target
-		case PartialNode:
-			target(fsm, state, transition)
+			transitionElement.target = target
+		case PartialElement:
+			target(model, nil, transitionElement)
 		}
 	}
 }
 
-func Choice(transitions ...PartialNode) PartialNode {
-	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		for _, transition := range transitions {
-			transition(fsm, state, nil)
-		}
-	}
-}
+// func Choice(transitions ...PartialElement) PartialElement {
+// 	return func(model *Modeled, _ *state, transitionElement *transition) {
+// 		for _, transition := range transitions {
+// 			transition(model, nil, transitionElement)
+// 		}
+// 	}
+// }
 
 // Check is an external condition that allows a Transition only if fn returns true.
-func Guard(fn Constraint) PartialNode {
-	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
-		if transition == nil {
+func Guard(fn Constraint) PartialElement {
+	return func(model *Modeled, _ *state, transitionElement *transition) {
+		if transitionElement == nil {
 			return
 		}
-		transition.guard = fn
-	}
-}
-
-// // Call defines a function that is called when a Transition occurs.
-func Effect(fn Action) PartialNode {
-	return func(fsm *FSM, state *StateNode, transition *TransitionNode) {
-		if transition == nil {
-			return
-		}
-		transition.effect = &ActionNode{
-			execute: fn,
-			cancel:  make(chan bool, 1),
+		transitionElement.guard = &constraint{
+			expr: fn,
 		}
 	}
 }
 
-func Transition(nodes ...PartialNode) PartialNode {
-	return func(fsm *FSM, state *StateNode, _ *TransitionNode) {
-		transition := &TransitionNode{}
+func Submachine(submachine *Modeled) PartialElement {
+	return func(modelPtr *Modeled, statePtr *state, _ *transition) {
+		if statePtr == nil {
+			slog.Warn("Submachine called on nil state")
+			return
+		}
+		statePtr.submachine = &FSM{
+			Modeled: &Modeled{
+				behavior: &behavior{
+					action:    submachine.behavior.action,
+					execution: sync.WaitGroup{},
+					mutex:     modelPtr.behavior.mutex,
+				},
+				states:          submachine.states,
+				submachineState: statePtr,
+			},
+			listeners: map[int]func(Trace){},
+			ctx:       context.Background(),
+		}
+	}
+}
+
+func Effect(fn Action) PartialElement {
+	return func(model *Modeled, _ *state, transitionElement *transition) {
+		if transitionElement == nil {
+			return
+		}
+		transitionElement.effect = &behavior{
+			action: fn,
+		}
+	}
+}
+
+func Transition(nodes ...PartialElement) PartialElement {
+	return func(model *Modeled, stateElement *state, _ *transition) {
+		transition := &transition{}
 		for _, node := range nodes {
-			node(fsm, nil, transition)
+			node(model, nil, transition)
 		}
-		if state != nil {
-			state.transitions = append(state.transitions, transition)
+		if stateElement != nil {
+			transition.source = stateElement.name
+			stateElement.transitions = append(stateElement.transitions, transition)
 		}
 	}
 }
 
 // Reset resets the machine to its initial state.
 func (f *FSM) Reset() {
-	f.current = f.initial
+	f.current = ""
 }
 
 // Current returns the current state.
-func (f *FSM) State() string {
-	return f.current
+func (f *FSM) State() *state {
+	return f.states[f.current]
 }
 
 // Enter sets a func that will be called when entering any state.
-func (f *FSM) OnTransition(fn func(Event, string, string)) {
-	f.onTransition = fn
+func (f *FSM) AddListener(fn func(Trace)) int {
+	index := len(f.listeners)
+	f.listeners[index] = fn
+	return index
 }
 
-// Exit sets a func that will be called when exiting any state.
-func (f *FSM) OnDispatch(fn func(Event, any)) {
-	f.onDispatch = fn
+func (f *FSM) RemoveListener(index int) {
+	delete(f.listeners, index)
 }
 
 func find[T any](slice []T, fn func(T) bool) (T, bool) {
@@ -281,44 +419,119 @@ func find[T any](slice []T, fn func(T) bool) (T, bool) {
 	return res, false
 }
 
+func (f *FSM) notify(trace Trace) bool {
+	if f == nil {
+		return false
+	}
+	for _, listener := range f.listeners {
+		listener(trace)
+	}
+	return true
+}
+
+func (fsm *FSM) transition(source *state, transition *transition, event Event, data any) {
+	if fsm == nil {
+		return
+	}
+	target, ok := fsm.states[transition.target]
+	if ok || target == source {
+		source.leave(fsm, event, data)
+	}
+	// if effect != nil {
+	transition.effect.execute(fsm, event, data)
+	transition.effect.wait()
+	// }
+	fsm.notify(Trace{
+		Kind:         "transition",
+		Event:        string(event),
+		CurrentState: source.name,
+		TargetState:  transition.target,
+		Data:         data,
+	})
+	if ok {
+		fsm.current = transition.target
+		target.enter(fsm, event, data)
+	}
+}
+
 // Event send an Event to a machine, applying at most one transition.
 // true is returned if a transition has been applied, false otherwise.
 func (fsm *FSM) Dispatch(event Event, data any) bool {
-	state, ok := fsm.states[fsm.current]
+	if fsm == nil {
+		return false
+	}
+	fsm.wait()
+	source, ok := fsm.states[fsm.current]
 	if !ok {
 		return false
 	}
+
+	if source.submachine != nil && fsm.submachineState != source && source.submachine.Dispatch(event, data) {
+		return true
+	}
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
-	for _, transition := range state.transitions {
+	for _, transition := range source.transitions {
 		_, ok := find(transition.events, func(evt Event) bool {
-			return evt == event
+			match, err := path.Match(string(evt), string(event))
+			if err != nil {
+				slog.Warn("Error matching event", "error", err)
+				return false
+			}
+			return match
 		})
 		if !ok {
 			continue
 		}
-		if transition.guard != nil && !transition.guard(event, data) {
+		if !transition.guard.evaluate(fsm, event, data) {
 			continue
 		}
-		target, ok := fsm.states[transition.target]
-		if !ok {
-			return true
-		}
-		if ok {
-			state.leave(event, data)
-		}
-		if transition.effect != nil {
-			transition.effect.Execute(event, data)
-			transition.effect.Wait()
-		}
-		if fsm.onTransition != nil {
-			fsm.onTransition(event, fsm.current, transition.target)
-		}
-		fsm.current = transition.target
-		if ok {
-			target.enter(event, data)
-		}
+		fsm.transition(source, transition, event, data)
 		return true
 	}
+	fsm.notify(Trace{
+		Kind:         "dispatch",
+		Event:        string(event),
+		CurrentState: source.name,
+		Data:         data,
+	})
 	return false
+}
+
+func (fsm *FSM) Context() Context {
+	return Context{
+		FSM:     fsm,
+		Context: fsm.ctx,
+	}
+}
+
+func Model(elements ...PartialElement) *Modeled {
+	newModel := &Modeled{
+		behavior: &behavior{
+			mutex: &sync.Mutex{},
+		},
+		states: map[string]*state{
+			"": {
+				name:        "",
+				transitions: []*transition{},
+			},
+		},
+	}
+	for _, partial := range elements {
+		partial(newModel, nil, nil)
+	}
+	newModel.behavior.action = func(ctx Context, event Event, data any) {
+		initial, ok := newModel.states[""]
+		if !ok {
+			slog.Warn("No initial state found")
+			return
+		}
+		transition := initial.transitions[0]
+		if transition == nil {
+			slog.Warn("No initial transition found")
+			return
+		}
+		ctx.transition(initial, transition, event, data)
+	}
+	return newModel
 }

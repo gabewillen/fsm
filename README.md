@@ -2,81 +2,91 @@
 
 Package fsm allows you to add [finite-state machines](https://en.wikipedia.org/wiki/Finite-state_machine) to your Go code.
 
-States and Events are defined as int consts:
+States and events are defined as strings, and the FSM is created using a model-based approach:
 
 ```go
-const (
-    StateFoo fsm.State = iota
-    StateBar
+model := fsm.Model(
+    fsm.Initial("foo"),
+    fsm.State("foo"),
+    fsm.State("bar"),
+    fsm.Transition(
+        fsm.On("foo"),
+        fsm.Source("foo"),
+        fsm.Target("bar"),
+    ),
 )
 
-const (
-    EventFoo fsm.Event = iota
-    EventBar
-)
-
-f := fsm.New(StateFoo)
-f.Transition(
-    fsm.On(EventFoo), fsm.Src(StateFoo),
-    fsm.Dst(StateBar),
-)
+f := fsm.New(context.Background(), model)
 ```
 
-You can have custom checks or actions:
+You can add guards (conditions) and effects (actions) to transitions:
 
 ```go
-f.Transition(
-    fsm.Src(StateFoo), fsm.Check(func () bool {
+fsm.Transition(
+    fsm.On("foo"),
+    fsm.Source("foo"),
+    fsm.Target("bar"),
+    fsm.Guard(func(ctx fsm.Context, event fsm.Event, data any) bool {
         // check something
+        return true
     }),
-    fsm.Call(func () {
+    fsm.Effect(func(ctx fsm.Context, event fsm.Event, data any) {
         // do something
     }),
 )
 ```
 
-Transitions can be triggered the second time an event occurs:
+States can have entry, activity, and exit actions:
 
 ```go
-f.Transition(
-    fsm.On(EventFoo), fsm.Src(StateFoo), fsm.Times(2),
-    fsm.Dst(StateBar),
+fsm.State("foo",
+    fsm.Entry(func(ctx fsm.Context, event fsm.Event, data any) {
+        // called when entering state
+    }),
+    fsm.Activity(func(ctx fsm.Context, event fsm.Event, data any) {
+        // long-running activity while in state
+        <-ctx.Done() // will be cancelled on state exit
+    }),
+    fsm.Exit(func(ctx fsm.Context, event fsm.Event, data any) {
+        // called when leaving state
+    }),
 )
 ```
 
-Functions can be called when entering or leaving a state:
+You can create hierarchical state machines using submachines:
 
 ```go
-f.EnterState(StateFoo, func() {
-    // do something	
-})
-f.Enter(func(state fsm.State) {
-    // do something	
-})
-f.ExitState(StateFoo, func() {
-    // do something	
-})
-f.Exit(func(state fsm.State) {
-    // do something	
-})
+subMachine := fsm.Model(
+    fsm.Initial("sub1"),
+    fsm.State("sub1"),
+    // ... submachine states and transitions
+)
+
+mainModel := fsm.Model(
+    fsm.Initial("main1"),
+    fsm.State("main1", fsm.Submachine(subMachine)),
+    // ... main machine states and transitions
+)
 ```
 
-## Performance
+You can listen to state transitions:
 
-This package is much faster and does a lot less allocations than github.com/looplab/fsm:
-
+```go
+f.AddListener(func(trace fsm.Trace) {
+    // trace contains information about the transition:
+    // - Kind: "transition" or "dispatch"
+    // - Event: the event that triggered the transition
+    // - CurrentState: the state before transition
+    // - TargetState: the state after transition
+    // - Data: any associated data
+})
 ```
-BenchmarkCocoonSpaceFSM-12    	29371851	        40.32 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLooplabFSM-12        	 2438946	       487.8 ns/op	     320 B/op	       4 allocs/op
-```
-
-(benchmark data is for two executed transitions)
-
-Benchmark information on https://github.com/cocoonspace/fsm-bench
 
 ## Installation
 
+```
 go get github.com/cocoonspace/fsm
+```
 
 ## Contribution guidelines
 
