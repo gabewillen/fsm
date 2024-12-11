@@ -204,9 +204,13 @@ func Initial(id string, partialElements ...PartialElement) PartialElement {
 }
 
 func State(id string, partialElements ...PartialElement) PartialElement {
-	return func(model *Modeled, superState *state, _ *transition) {
-		this := &state{
-			name: id,
+	return func(model *Modeled, _ *state, _ *transition) {
+		this, ok := model.states[id]
+		if !ok {
+			this = &state{
+				name: id,
+			}
+			model.states[id] = this
 		}
 		for _, partial := range partialElements {
 			partial(model, this, nil)
