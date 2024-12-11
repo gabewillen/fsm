@@ -465,6 +465,10 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 	return false
 }
 
+func (fsm *FSM) Context() context.Context {
+	return fsm.ctx
+}
+
 func Model(elements ...PartialElement) *Modeled {
 	newModel := &Modeled{
 		behavior: &behavior{
