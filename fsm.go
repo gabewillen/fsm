@@ -182,7 +182,6 @@ func New(context context.Context, stateMachineModel *Modeled) *FSM {
 		listeners: map[int]func(Trace){},
 	}
 	fsm.Modeled.behavior.execute(fsm, "", nil)
-	fsm.Modeled.behavior.wait()
 	return fsm
 }
 
