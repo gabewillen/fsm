@@ -75,45 +75,45 @@ func TestGuard(t *testing.T) {
 	}
 }
 
-// func TestChoice(t *testing.T) {
-// 	check := false
-// 	model := fsm.Model(
-// 		fsm.Initial("foo"),
-// 		fsm.State("foo"),
-// 		fsm.State("bar"),
-// 		fsm.State("baz"),
-// 		fsm.Transition(
-// 			fsm.On("foo"),
-// 			fsm.Source("foo"),
-// 			fsm.Choice(
-// 				fsm.Transition(
-// 					fsm.Target("bar"),
-// 					fsm.Guard(func(ctx fsm.Context, event fsm.Event, data interface{}) bool {
-// 						return check
-// 					}),
-// 				),
-// 				fsm.Transition(
-// 					fsm.Target("baz"),
-// 					fsm.Guard(func(ctx fsm.Context, event fsm.Event, data interface{}) bool {
-// 						return !check
-// 					}),
-// 				),
-// 			),
-// 		),
-// 	)
-// 	f := fsm.New(context.Background(), model)
-// 	res := f.Dispatch("foo", nil)
-// 	if !res || f.State().Name() != "baz" {
-// 		t.Error("Should transition to baz when check is false")
-// 	}
+func TestChoice(t *testing.T) {
+	check := false
+	model := fsm.Model(
+		fsm.Initial("foo"),
+		fsm.State("foo"),
+		fsm.State("bar"),
+		fsm.State("baz"),
+		fsm.Transition(
+			fsm.On("foo"),
+			fsm.Source("foo"),
+			fsm.Choice(
+				fsm.Transition(
+					fsm.Target("bar"),
+					fsm.Guard(func(ctx fsm.Context, event fsm.Event, data interface{}) bool {
+						return check
+					}),
+				),
+				fsm.Transition(
+					fsm.Target("baz"),
+					fsm.Guard(func(ctx fsm.Context, event fsm.Event, data interface{}) bool {
+						return !check
+					}),
+				),
+			),
+		),
+	)
+	f := fsm.New(context.Background(), model)
+	res := f.Dispatch("foo", nil)
+	if !res || f.State().Name() != "baz" {
+		t.Error("Should transition to baz when check is false", "state", f.State().Name())
+	}
 
-// 	check = true
-// 	f.Reset()
-// 	res = f.Dispatch("foo", nil)
-// 	if !res || f.State().Name() != "bar" {
-// 		t.Error("Should transition to bar when check is true")
-// 	}
-// }
+	check = true
+	f = fsm.New(context.Background(), model)
+	res = f.Dispatch("foo", nil)
+	if !res || f.State().Name() != "bar" {
+		t.Error("Should transition to bar when check is true")
+	}
+}
 
 func TestEffect(t *testing.T) {
 	call := false

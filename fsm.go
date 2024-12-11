@@ -2,9 +2,11 @@ package fsm
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path"
 	"sync"
+	"time"
 )
 
 // required for type guard
@@ -78,8 +80,16 @@ func (node *behavior) terminate() {
 	node.execution.Wait()
 }
 
+type kind string
+
+const (
+	StateKind  kind = "state"
+	ChoiceKind kind = "choice"
+)
+
 type state struct {
 	name        string
+	kind        kind
 	entry       *behavior
 	activity    *behavior
 	exit        *behavior
@@ -168,6 +178,17 @@ type FSM struct {
 
 type PartialElement func(*Modeled, *state, *transition)
 
+var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+func id(n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letters[int(time.Now().UnixNano()%int64(len(letters)))]
+		time.Sleep(1 * time.Nanosecond) // Ensure unique values
+	}
+	return string(b)
+}
+
 // New creates a new finite state machine having the specified initial state.
 func New(context context.Context, stateMachineModel *Modeled) *FSM {
 	fsm := &FSM{
@@ -199,6 +220,7 @@ func Initial(id string, partialElements ...PartialElement) PartialElement {
 		if !ok {
 			target = &state{
 				name:        id,
+				kind:        StateKind,
 				transitions: []*transition{},
 			}
 			model.states[id] = target
@@ -220,6 +242,7 @@ func State(id string, partialElements ...PartialElement) PartialElement {
 		if !ok {
 			this = &state{
 				name:        id,
+				kind:        StateKind,
 				transitions: []*transition{},
 			}
 			model.states[id] = this
@@ -265,6 +288,7 @@ func Source(sources ...string) PartialElement {
 			if !ok {
 				source = &state{
 					name:        src,
+					kind:        StateKind,
 					transitions: []*transition{},
 				}
 				model.states[src] = source
@@ -312,6 +336,7 @@ func Target[T Targetable](target T) PartialElement {
 			if _, ok := model.states[target]; !ok {
 				model.states[target] = &state{
 					name:        target,
+					kind:        StateKind,
 					transitions: []*transition{},
 				}
 			}
@@ -322,13 +347,20 @@ func Target[T Targetable](target T) PartialElement {
 	}
 }
 
-// func Choice(transitions ...PartialElement) PartialElement {
-// 	return func(model *Modeled, _ *state, transitionElement *transition) {
-// 		for _, transition := range transitions {
-// 			transition(model, nil, transitionElement)
-// 		}
-// 	}
-// }
+func Choice(transitions ...PartialElement) PartialElement {
+	return func(model *Modeled, currentState *state, transitionElement *transition) {
+		choice := &state{
+			name:        fmt.Sprintf("choice-%s", id(10)),
+			kind:        ChoiceKind,
+			transitions: []*transition{},
+		}
+		for _, transition := range transitions {
+			transition(model, choice, nil)
+		}
+		model.states[choice.name] = choice
+		transitionElement.target = choice.name
+	}
+}
 
 // Check is an external condition that allows a Transition only if fn returns true.
 func Guard(fn Constraint) PartialElement {
@@ -433,25 +465,43 @@ func (fsm *FSM) transition(source *state, transition *transition, event Event, d
 	if fsm == nil {
 		return
 	}
-	target, ok := fsm.states[transition.target]
-	if ok || target == source {
-		source.leave(fsm, event, data)
+	for transition != nil {
+		target, ok := fsm.states[transition.target]
+		if ok || target == source {
+			source.leave(fsm, event, data)
+		}
+
+		// if effect != nil {
+		transition.effect.execute(fsm, event, data)
+		transition.effect.wait()
+		// }
+		fsm.notify(Trace{
+			Kind:         "transition",
+			Event:        string(event),
+			CurrentState: source.name,
+			TargetState:  transition.target,
+			Data:         data,
+		})
+		if ok {
+			if target.kind == ChoiceKind {
+				source = target
+				for _, choice := range target.transitions {
+					if !choice.guard.evaluate(fsm, event, data) {
+						continue
+					}
+					transition = choice
+					break
+				}
+				continue
+			} else {
+				fsm.current = transition.target
+				target.enter(fsm, event, data)
+				return
+			}
+		}
+		return
 	}
-	// if effect != nil {
-	transition.effect.execute(fsm, event, data)
-	transition.effect.wait()
-	// }
-	fsm.notify(Trace{
-		Kind:         "transition",
-		Event:        string(event),
-		CurrentState: source.name,
-		TargetState:  transition.target,
-		Data:         data,
-	})
-	if ok {
-		fsm.current = transition.target
-		target.enter(fsm, event, data)
-	}
+
 }
 
 // Event send an Event to a machine, applying at most one transition.
@@ -512,6 +562,7 @@ func Model(elements ...PartialElement) *Modeled {
 		},
 		states: map[string]*state{
 			"": {
+				kind:        StateKind,
 				name:        "",
 				transitions: []*transition{},
 			},
