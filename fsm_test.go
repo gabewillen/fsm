@@ -112,7 +112,7 @@ func TestOnTransition(t *testing.T) {
 	)
 	f := fsm.New(context.Background(), model)
 	var calls int
-	f.OnTransition(func(event fsm.Event, source, target string) {
+	f.AddListener(func(trace fsm.Trace) {
 		calls++
 	})
 	_ = f.Dispatch("foo", nil)
@@ -208,8 +208,8 @@ func TestSubmachine(t *testing.T) {
 		t.Error("Submachine is nil")
 		return
 	}
-	submachine.OnTransition(func(event fsm.Event, source, target string) {
-		t.Log("Submachine transition", event, source, target)
+	submachine.AddListener(func(trace fsm.Trace) {
+		t.Log("Submachine transition", trace)
 	})
 	if submachine.State().Name() != "foo" {
 		t.Error("bad submachine state", submachine.State().Name(), "expected", "foo")

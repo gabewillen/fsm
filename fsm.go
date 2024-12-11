@@ -7,7 +7,7 @@ import (
 )
 
 // required for type guard
-type Node interface{}
+type node interface{}
 
 type Context struct {
 	*FSM
@@ -148,12 +148,19 @@ type Modeled struct {
 // 	*statemachine
 // }
 
+type Trace struct {
+	Kind         string
+	Event        string
+	CurrentState string
+	TargetState  string
+	Data         any
+}
+
 // FSM is a finite state machine.
 type FSM struct {
 	*Modeled
-	ctx          context.Context
-	onDispatch   func(Event, any)
-	onTransition func(Event, string, string)
+	ctx       context.Context
+	listeners map[int]func(Trace)
 }
 
 type PartialElement func(*Modeled, *state, *transition)
@@ -171,7 +178,8 @@ func New(context context.Context, stateMachineModel *Modeled) *FSM {
 			initial: stateMachineModel.initial,
 			current: stateMachineModel.current,
 		},
-		ctx: context,
+		ctx:       context,
+		listeners: map[int]func(Trace){},
 	}
 	fsm.Modeled.behavior.execute(fsm, "", nil)
 	fsm.Modeled.behavior.wait()
@@ -249,7 +257,7 @@ func Source(sources ...string) PartialElement {
 }
 
 type Dispatchable interface {
-	string | Node | PartialElement
+	string | node | PartialElement
 }
 
 // On defines the Event that triggers a Transition.
@@ -331,6 +339,7 @@ func Submachine(submachine *Modeled) PartialElement {
 				initial:         submachine.initial,
 				submachineState: statePtr,
 			},
+			listeners: map[int]func(Trace){},
 		}
 	}
 }
@@ -370,13 +379,14 @@ func (f *FSM) State() *state {
 }
 
 // Enter sets a func that will be called when entering any state.
-func (f *FSM) OnTransition(fn func(Event, string, string)) {
-	f.onTransition = fn
+func (f *FSM) AddListener(fn func(Trace)) int {
+	index := len(f.listeners)
+	f.listeners[index] = fn
+	return index
 }
 
-// Exit sets a func that will be called when exiting any state.
-func (f *FSM) OnDispatch(fn func(Event, any)) {
-	f.onDispatch = fn
+func (f *FSM) RemoveListener(index int) {
+	delete(f.listeners, index)
 }
 
 func find[T any](slice []T, fn func(T) bool) (T, bool) {
@@ -387,6 +397,16 @@ func find[T any](slice []T, fn func(T) bool) (T, bool) {
 		}
 	}
 	return res, false
+}
+
+func (f *FSM) notify(trace Trace) bool {
+	if f == nil {
+		return false
+	}
+	for _, listener := range f.listeners {
+		listener(trace)
+	}
+	return true
 }
 
 // Event send an Event to a machine, applying at most one transition.
@@ -427,8 +447,14 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 			transition.effect.execute(fsm, event, data)
 			transition.effect.wait()
 		}
-		if fsm.onTransition != nil {
-			fsm.onTransition(event, fsm.current, transition.target)
+		if len(fsm.listeners) > 0 {
+			fsm.notify(Trace{
+				Kind:         "transition",
+				Event:        string(event),
+				CurrentState: fsm.current,
+				TargetState:  transition.target,
+				Data:         data,
+			})
 		}
 		fsm.current = transition.target
 		if ok {
