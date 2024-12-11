@@ -119,13 +119,13 @@ func TestOnTransition(t *testing.T) {
 		calls++
 	})
 	_ = f.Dispatch("foo", nil)
-	if calls != 1 {
-		t.Error("OnTransition func has not been called")
+	if calls != 2 {
+		t.Error("OnTransition func has not been called", "calls", calls)
 		return
 	}
 	_ = f.Dispatch("bar", nil)
-	if calls != 2 {
-		t.Error("OnTransition func has not been called")
+	if calls != 3 {
+		t.Error("OnTransition func has not been called", "calls", calls)
 		return
 	}
 }

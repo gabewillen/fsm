@@ -351,7 +351,7 @@ func Submachine(submachine *Modeled) PartialElement {
 				behavior: &behavior{
 					action:    submachine.behavior.action,
 					execution: sync.WaitGroup{},
-					mutex:     &sync.Mutex{},
+					mutex:     modelPtr.behavior.mutex,
 				},
 				states:          submachine.states,
 				submachineState: statePtr,
@@ -457,6 +457,7 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 	if fsm == nil {
 		return false
 	}
+	fsm.wait()
 	source, ok := fsm.states[fsm.current]
 	if !ok {
 		return false
@@ -512,8 +513,6 @@ func Model(elements ...PartialElement) *Modeled {
 		partial(newModel, nil, nil)
 	}
 	newModel.behavior.action = func(ctx Context, event Event, data any) {
-		ctx.mutex.Lock()
-		defer ctx.mutex.Unlock()
 		initial, ok := newModel.states[""]
 		if !ok {
 			slog.Warn("No initial state found")
