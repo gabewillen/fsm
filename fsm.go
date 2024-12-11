@@ -97,7 +97,9 @@ func (statePtr *state) enter(fsm *FSM, event Event, data any) {
 	// execute activity action this runs in a goroutine
 	statePtr.activity.execute(fsm, event, data)
 	if statePtr.submachine != nil {
-		statePtr.submachine.execute(fsm, event, data)
+		statePtr.submachine.ctx = fsm.ctx
+		statePtr.submachine.execute(statePtr.submachine, event, data)
+		statePtr.submachine.wait()
 	}
 }
 
@@ -140,7 +142,6 @@ type Modeled struct {
 	*behavior
 	states          map[string]*state
 	current         string
-	initial         string
 	submachineState *state
 }
 
@@ -175,30 +176,39 @@ func New(context context.Context, stateMachineModel *Modeled) *FSM {
 				mutex:     &sync.Mutex{},
 			},
 			states:  stateMachineModel.states,
-			initial: stateMachineModel.initial,
 			current: stateMachineModel.current,
 		},
 		ctx:       context,
 		listeners: map[int]func(Trace){},
 	}
 	fsm.Modeled.behavior.execute(fsm, "", nil)
+	// go fsm.Dispatch("", nil)
 	return fsm
 }
 
 func Initial(id string, partialElements ...PartialElement) PartialElement {
 	return func(model *Modeled, _ *state, _ *transition) {
-		this, ok := model.states[id]
+		initial, ok := model.states[""]
 		if !ok {
-			this = &state{
-				name: id,
+			slog.Warn("No initial state found")
+			return
+		}
+		target, ok := model.states[id]
+		if !ok {
+			target = &state{
+				name:        id,
+				transitions: []*transition{},
 			}
-			model.states[id] = this
+			model.states[id] = target
 		}
-		model.initial = id
-		model.current = id
+		transition := &transition{
+			events: []Event{},
+			target: id,
+		}
 		for _, partial := range partialElements {
-			partial(model, this, nil)
+			partial(model, target, transition)
 		}
+		initial.transitions = append(initial.transitions, transition)
 	}
 }
 
@@ -207,14 +217,14 @@ func State(id string, partialElements ...PartialElement) PartialElement {
 		this, ok := model.states[id]
 		if !ok {
 			this = &state{
-				name: id,
+				name:        id,
+				transitions: []*transition{},
 			}
 			model.states[id] = this
 		}
 		for _, partial := range partialElements {
 			partial(model, this, nil)
 		}
-		model.states[id] = this
 	}
 }
 
@@ -244,17 +254,20 @@ func Exit(fn Action) PartialElement {
 
 // Src defines the source States for a Transition.
 func Source(sources ...string) PartialElement {
-	return func(model *Modeled, _ *state, transition *transition) {
-		if transition == nil {
+	return func(model *Modeled, _ *state, transitionPtr *transition) {
+		if transitionPtr == nil {
 			return
 		}
 		for _, src := range sources {
 			source, ok := model.states[src]
 			if !ok {
-				source = &state{}
+				source = &state{
+					name:        src,
+					transitions: []*transition{},
+				}
 				model.states[src] = source
 			}
-			source.transitions = append(source.transitions, transition)
+			source.transitions = append(source.transitions, transitionPtr)
 		}
 	}
 }
@@ -273,8 +286,8 @@ func On[E Dispatchable](events ...E) PartialElement {
 			switch any(evt).(type) {
 			case string:
 				transition.events = append(transition.events, Event(any(evt).(string)))
-			// case Event:
-			// 	transition.events = append(transition.events, &EventNode{kind: any(evt).(Event).Kind()})
+			case Event:
+				transition.events = append(transition.events, any(evt).(Event))
 			case PartialElement:
 				any(evt).(PartialElement)(model, nil, transition)
 			}
@@ -296,6 +309,7 @@ func Target[T Targetable](target T) PartialElement {
 		case string:
 			if _, ok := model.states[target]; !ok {
 				model.states[target] = &state{
+					name:        target,
 					transitions: []*transition{},
 				}
 			}
@@ -335,19 +349,19 @@ func Submachine(submachine *Modeled) PartialElement {
 		statePtr.submachine = &FSM{
 			Modeled: &Modeled{
 				behavior: &behavior{
-					mutex: modelPtr.behavior.mutex,
+					action:    submachine.behavior.action,
+					execution: sync.WaitGroup{},
+					mutex:     modelPtr.behavior.mutex,
 				},
 				states:          submachine.states,
-				current:         submachine.initial,
-				initial:         submachine.initial,
 				submachineState: statePtr,
 			},
 			listeners: map[int]func(Trace){},
+			ctx:       context.Background(),
 		}
 	}
 }
 
-// // Call defines a function that is called when a Transition occurs.
 func Effect(fn Action) PartialElement {
 	return func(model *Modeled, _ *state, transitionElement *transition) {
 		if transitionElement == nil {
@@ -373,7 +387,7 @@ func Transition(nodes ...PartialElement) PartialElement {
 
 // Reset resets the machine to its initial state.
 func (f *FSM) Reset() {
-	f.current = f.initial
+	f.current = ""
 }
 
 // Current returns the current state.
@@ -412,63 +426,66 @@ func (f *FSM) notify(trace Trace) bool {
 	return true
 }
 
+func (fsm *FSM) transition(source *state, transition *transition, event Event, data any) {
+	if fsm == nil {
+		return
+	}
+	target, ok := fsm.states[transition.target]
+	if ok || target == source {
+		source.leave(fsm, event, data)
+	}
+	// if effect != nil {
+	transition.effect.execute(fsm, event, data)
+	transition.effect.wait()
+	// }
+	fsm.notify(Trace{
+		Kind:         "transition",
+		Event:        string(event),
+		CurrentState: source.name,
+		TargetState:  transition.target,
+		Data:         data,
+	})
+	if ok {
+		fsm.current = transition.target
+		target.enter(fsm, event, data)
+	}
+}
+
 // Event send an Event to a machine, applying at most one transition.
 // true is returned if a transition has been applied, false otherwise.
 func (fsm *FSM) Dispatch(event Event, data any) bool {
 	if fsm == nil {
 		return false
 	}
-	fsm.notify(Trace{
-		Kind:         "dispatch",
-		Event:        string(event),
-		CurrentState: fsm.current,
-		Data:         data,
-	})
-	state, ok := fsm.states[fsm.current]
+	source, ok := fsm.states[fsm.current]
 	if !ok {
 		return false
 	}
 
-	if state.submachine != nil && fsm.submachineState != state && state.submachine.Dispatch(event, data) {
+	if source.submachine != nil && fsm.submachineState != source && source.submachine.Dispatch(event, data) {
 		return true
 	}
-
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
-	for _, transition := range state.transitions {
+	for _, transition := range source.transitions {
 		_, ok := find(transition.events, func(evt Event) bool {
 			return evt == event
 		})
 		if !ok {
 			continue
 		}
-		if transition.guard != nil && !transition.guard.evaluate(fsm, event, data) {
+		if !transition.guard.evaluate(fsm, event, data) {
 			continue
 		}
-		target, ok := fsm.states[transition.target]
-		if !ok {
-			return true
-		}
-		if ok {
-			state.leave(fsm, event, data)
-		}
-		if transition.effect != nil {
-			transition.effect.execute(fsm, event, data)
-			transition.effect.wait()
-		}
-		fsm.notify(Trace{
-			Kind:         "transition",
-			Event:        string(event),
-			CurrentState: fsm.current,
-			TargetState:  transition.target,
-			Data:         data,
-		})
-		fsm.current = transition.target
-		if ok {
-			target.enter(fsm, event, data)
-		}
+		fsm.transition(source, transition, event, data)
 		return true
 	}
+	fsm.notify(Trace{
+		Kind:         "dispatch",
+		Event:        string(event),
+		CurrentState: source.name,
+		Data:         data,
+	})
 	return false
 }
 
@@ -484,18 +501,28 @@ func Model(elements ...PartialElement) *Modeled {
 		behavior: &behavior{
 			mutex: &sync.Mutex{},
 		},
-		states: map[string]*state{},
+		states: map[string]*state{
+			"": {
+				name:        "",
+				transitions: []*transition{},
+			},
+		},
 	}
 	for _, partial := range elements {
 		partial(newModel, nil, nil)
 	}
 	newModel.behavior.action = func(ctx Context, event Event, data any) {
-		initial, ok := newModel.states[newModel.initial]
-
+		initial, ok := newModel.states[""]
 		if !ok {
+			slog.Warn("No initial state found")
 			return
 		}
-		initial.enter(ctx.FSM, event, data)
+		transition := initial.transitions[0]
+		if transition == nil {
+			slog.Warn("No initial transition found")
+			return
+		}
+		ctx.transition(initial, transition, event, data)
 	}
 	return newModel
 }
