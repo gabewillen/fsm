@@ -419,6 +419,12 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 	if fsm == nil {
 		return false
 	}
+	fsm.notify(Trace{
+		Kind:         "dispatch",
+		Event:        string(event),
+		CurrentState: fsm.current,
+		Data:         data,
+	})
 	state, ok := fsm.states[fsm.current]
 	if !ok {
 		return false
@@ -451,15 +457,13 @@ func (fsm *FSM) Dispatch(event Event, data any) bool {
 			transition.effect.execute(fsm, event, data)
 			transition.effect.wait()
 		}
-		if len(fsm.listeners) > 0 {
-			fsm.notify(Trace{
-				Kind:         "transition",
-				Event:        string(event),
-				CurrentState: fsm.current,
-				TargetState:  transition.target,
-				Data:         data,
-			})
-		}
+		fsm.notify(Trace{
+			Kind:         "transition",
+			Event:        string(event),
+			CurrentState: fsm.current,
+			TargetState:  transition.target,
+			Data:         data,
+		})
 		fsm.current = transition.target
 		if ok {
 			target.enter(fsm, event, data)
