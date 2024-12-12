@@ -341,3 +341,16 @@ func TestNestedStates(t *testing.T) {
 		t.Error("bar/entry not called")
 	}
 }
+
+func TestNestedInitial(t *testing.T) {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+	model := fsm.Model(
+		fsm.Initial("a"),
+		fsm.State("a", fsm.Initial("b"), fsm.State("b")),
+	)
+	f := fsm.New(context.Background(), model)
+	if f.State().Name() != "a/b" {
+		t.Error("fsm state is not initial state a/b", "state", f.State().Name())
+		return
+	}
+}

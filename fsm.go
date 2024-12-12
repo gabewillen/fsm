@@ -157,11 +157,6 @@ func (element *state) Submachine() *FSM {
 	return element.submachine
 }
 
-type transitionPath struct {
-	exit  []Path
-	enter []Path
-}
-
 type transition struct {
 	events []Event
 	kind   kind
@@ -169,7 +164,6 @@ type transition struct {
 	effect *behavior
 	target Path
 	source Path
-	path   transitionPath
 }
 
 type Modeled struct {
@@ -272,12 +266,13 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 		case string:
 			id := asPath(any(name).(string))
 			initialPath := Path(path.Join(string(currentPath), string(InitialPath)))
+			slog.Debug("[fsm][Initial] initialPath", "initialPath", initialPath)
 			initial, ok := model.states[initialPath]
 			if !ok {
 				slog.Debug("[fsm][Initial] creating initial state", "path", initialPath)
 				initial = &state{
 					path:        initialPath,
-					kind:        StateKind,
+					kind:        InitialKind,
 					transitions: []*transition{},
 				}
 				model.states[initialPath] = initial
@@ -286,7 +281,7 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 			if !ok {
 				slog.Debug("[fsm][Initial] target state not found, creating a new state", "path", id)
 				target = &state{
-					path:        id,
+					path:        Path(path.Join(string(currentPath), string(id))),
 					kind:        StateKind,
 					transitions: []*transition{},
 				}
@@ -528,12 +523,7 @@ func Effect(fn Action) Buildable {
 
 func Transition(nodes ...Buildable) Buildable {
 	return func(model *ModelBuilder) {
-		transition := &transition{
-			path: transitionPath{
-				exit:  []Path{},
-				enter: []Path{},
-			},
-		}
+		transition := &transition{}
 		model.push(model.state, transition)
 		for _, node := range nodes {
 			node(model)
@@ -654,6 +644,7 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event, 
 				continue
 			} else {
 				fsm.current = transition.target
+				fsm.initial(target, event, data)
 				return data, true
 			}
 		}
@@ -663,7 +654,7 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event, 
 	return nil, false
 }
 
-func (fsm *FSM) initial(state *state) {
+func (fsm *FSM) initial(state *state, event Event, data any) {
 	if fsm == nil {
 		return
 	}
@@ -765,7 +756,7 @@ func Model(elements ...Buildable) *ModelBuilder {
 		buildable(builder)
 	}
 	builder.Modeled.behavior.action = func(ctx Context, event Event, data any) {
-		ctx.initial(nil)
+		ctx.initial(nil, event, data)
 	}
 	return builder
 }
