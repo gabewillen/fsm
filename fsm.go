@@ -266,7 +266,6 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 		case string:
 			id := asPath(any(name).(string))
 			initialPath := Path(path.Join(string(currentPath), string(InitialPath)))
-			slog.Debug("[fsm][Initial] initialPath", "initialPath", initialPath)
 			initial, ok := model.states[initialPath]
 			if !ok {
 				initial = &state{
@@ -276,14 +275,15 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 				}
 				model.states[initialPath] = initial
 			}
-			target, ok := model.states[id]
+			targetPath := Path(path.Join(string(currentPath), string(id)))
+			target, ok := model.states[targetPath]
 			if !ok {
 				target = &state{
-					path:        Path(path.Join(string(currentPath), string(id))),
+					path:        targetPath,
 					kind:        StateKind,
 					transitions: []*transition{},
 				}
-				model.states[id] = target
+				model.states[targetPath] = target
 			}
 			transition := &transition{
 				events: []Event{},
@@ -312,7 +312,6 @@ func State(name string, partialElements ...Buildable) Buildable {
 		}
 		stateElement, ok := model.states[statePath]
 		if !ok {
-			slog.Debug("[fsm][State] creating state", "path", statePath)
 			stateElement = &state{
 				path:        statePath,
 				kind:        StateKind,
@@ -661,7 +660,6 @@ func (fsm *FSM) initial(state *state, event Event, data any) {
 		slog.Warn("[FSM][initial] No initial transition found", "path", initialPath)
 		return
 	}
-
 	fsm.transition(initial, transition, event, data)
 }
 
@@ -680,7 +678,6 @@ func (fsm *FSM) Dispatch(event Event, data any) (any, bool) {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 	states := strings.Split(string(fsm.current), "/")
-	slog.Debug("[FSM][Dispatch] states", "states", states, "current", fsm.current)
 	for index := range states {
 		source, ok := fsm.states[Path(path.Join(states[:index+1]...))]
 		if !ok {
@@ -703,7 +700,6 @@ func (fsm *FSM) Dispatch(event Event, data any) (any, bool) {
 			if index == -1 {
 				continue
 			}
-			transition := source.transitions[index]
 			if !transition.guard.evaluate(fsm, event, data) {
 				continue
 			}

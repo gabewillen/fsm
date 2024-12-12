@@ -359,7 +359,25 @@ func TestNestedTransitions(t *testing.T) {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 	model := fsm.Model(
 		fsm.Initial("a"),
-		fsm.State("a", fsm.Initial("b"), fsm.State("b"), fsm.State("c"), fsm.Transition(fsm.On("a"), fsm.Source("a"), fsm.Target("c"))),
+		fsm.State("a",
+			fsm.Initial("b"),
+			fsm.State("b"),
+			fsm.State("c"),
+			fsm.Transition(
+				fsm.On("a"),
+				fsm.Source("a"),
+				fsm.Target("c"),
+			),
+		),
+		fsm.State("b",
+			fsm.Initial("c"),
+			fsm.State("c"),
+		),
+		fsm.Transition(
+			fsm.On("b"),
+			fsm.Source("a"),
+			fsm.Target("b"),
+		),
 	)
 	f := fsm.New(context.Background(), model)
 	if f.State().Name() != "a/b" {
@@ -369,6 +387,11 @@ func TestNestedTransitions(t *testing.T) {
 	f.Dispatch("a", nil)
 	if f.State().Name() != "a/c" {
 		t.Error("fsm state is not a/c", "state", f.State().Name())
+		return
+	}
+	f.Dispatch("b", nil)
+	if f.State().Name() != "b/c" {
+		t.Error("fsm state is not b", "state", f.State().Name())
 		return
 	}
 }
