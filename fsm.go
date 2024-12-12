@@ -547,7 +547,6 @@ func Transition(nodes ...Buildable) Buildable {
 		} else {
 			transition.kind = ExternalKind
 		}
-		slog.Debug("[fsm][Transition]", "transition", transition)
 	}
 }
 
@@ -587,7 +586,6 @@ func (f *FSM) notify(trace Trace) bool {
 }
 
 func (fsm *FSM) transition(current *state, transition *transition, event Event, data any) (any, bool) {
-	slog.Debug("[FSM][transition] transition", "current", current, "transition", transition, "event", event, "data", data)
 	var ok bool
 	var target *state
 	if fsm == nil {
@@ -613,7 +611,6 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event, 
 				return nil, false
 			}
 			exit := strings.Split(string(current.path), "/")
-			slog.Debug("[FSM][transition] exit", "exit", exit, "source", transition.source, "target", transition.target, "current", current.path)
 			for index := range exit {
 				current, ok = fsm.states[Path(path.Join(exit[:len(exit)-index]...))]
 				if ok {
@@ -623,7 +620,6 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event, 
 		}
 		transition.effect.execute(fsm, event, data)
 		transition.effect.wait()
-		slog.Debug("[FSM][transition] transition", "current", current, "transition", transition, "event", event, "data", data)
 		enter := strings.Split(strings.TrimPrefix(string(transition.target), string(transition.source)), "/")
 		for index := range enter {
 			current, ok = fsm.states[Path(path.Join(enter[:index+1]...))]
@@ -664,7 +660,9 @@ func (fsm *FSM) initial(state *state, event Event, data any) {
 	}
 	initial, ok := fsm.states[initialPath]
 	if !ok {
-		slog.Warn("[FSM][initial] No initial state found", "path", initialPath)
+		if state == nil {
+			slog.Warn("[FSM][initial] No initial state found", "path", initialPath)
+		}
 		return
 	}
 	transition := initial.transitions[0]
@@ -673,7 +671,7 @@ func (fsm *FSM) initial(state *state, event Event, data any) {
 		return
 	}
 
-	fsm.transition(initial, transition, "", nil)
+	fsm.transition(initial, transition, event, data)
 }
 
 // Event send an Event to a machine, applying at most one transition.
