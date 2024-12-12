@@ -354,3 +354,21 @@ func TestNestedInitial(t *testing.T) {
 		return
 	}
 }
+
+func TestNestedTransitions(t *testing.T) {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+	model := fsm.Model(
+		fsm.Initial("a"),
+		fsm.State("a", fsm.Initial("b"), fsm.State("b"), fsm.State("c"), fsm.Transition(fsm.On("a"), fsm.Source("a"), fsm.Target("c"))),
+	)
+	f := fsm.New(context.Background(), model)
+	if f.State().Name() != "a/b" {
+		t.Error("fsm state is not initial state a/b", "state", f.State().Name())
+		return
+	}
+	f.Dispatch("a", nil)
+	if f.State().Name() != "a/c" {
+		t.Error("fsm state is not a/c", "state", f.State().Name())
+		return
+	}
+}

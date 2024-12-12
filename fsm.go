@@ -269,7 +269,6 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 			slog.Debug("[fsm][Initial] initialPath", "initialPath", initialPath)
 			initial, ok := model.states[initialPath]
 			if !ok {
-				slog.Debug("[fsm][Initial] creating initial state", "path", initialPath)
 				initial = &state{
 					path:        initialPath,
 					kind:        InitialKind,
@@ -279,7 +278,6 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 			}
 			target, ok := model.states[id]
 			if !ok {
-				slog.Debug("[fsm][Initial] target state not found, creating a new state", "path", id)
 				target = &state{
 					path:        Path(path.Join(string(currentPath), string(id))),
 					kind:        StateKind,
@@ -289,8 +287,9 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 			}
 			transition := &transition{
 				events: []Event{},
-				target: id,
 				kind:   ExternalKind,
+				source: initialPath,
+				target: target.path,
 			}
 			model.push(target, transition)
 			for _, partial := range partialElements {
@@ -378,7 +377,6 @@ func Source(sourcePath Path) Buildable {
 		}
 		source, ok := model.states[sourcePath]
 		if !ok {
-			slog.Debug("[fsm][Source] creating source state", "path", sourcePath)
 			source = &state{
 				path:        sourcePath,
 				kind:        StateKind,
@@ -427,7 +425,7 @@ func Target[T Targetable](target T) Buildable {
 			return
 		}
 		switch any(target).(type) {
-		case string:
+		case string, Path:
 			targetPath := asPath(any(target).(string))
 			if model.state != nil {
 				targetPath = Path(path.Join(string(model.state.path), string(targetPath)))
@@ -529,12 +527,10 @@ func Transition(nodes ...Buildable) Buildable {
 			node(model)
 		}
 		model.pop()
+		slog.Debug("[fsm][Transition] transition", "transition", transition)
 		if model.state != nil {
 			transition.source = model.state.path
 			model.state.transitions = append(model.state.transitions, transition)
-			if !path.IsAbs(string(transition.target)) {
-				transition.target = Path(path.Join(string(model.state.path), string(transition.target)))
-			}
 		} else if transition.target == "" {
 			slog.Error("[fsm][Transition] target is empty", "transition", transition)
 		}
@@ -605,11 +601,7 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event, 
 			transition.effect.wait()
 			return data, true
 		case SelfKind, ExternalKind:
-			target, ok = fsm.states[transition.target]
-			if !ok {
-				slog.Error("[FSM][transition] target state not found", "target", transition.target)
-				return nil, false
-			}
+
 			exit := strings.Split(string(current.path), "/")
 			for index := range exit {
 				current, ok = fsm.states[Path(path.Join(exit[:len(exit)-index]...))]
@@ -627,7 +619,7 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event, 
 				current.enter(fsm, event, data)
 			}
 		}
-		if target != nil {
+		if target, ok = fsm.states[transition.target]; ok && target != nil {
 			if target.kind == ChoiceKind {
 				current = target
 				for _, choice := range target.transitions {
@@ -644,7 +636,6 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event, 
 				return data, true
 			}
 		}
-
 		return data, true
 	}
 	return nil, false
@@ -689,6 +680,7 @@ func (fsm *FSM) Dispatch(event Event, data any) (any, bool) {
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
 	states := strings.Split(string(fsm.current), "/")
+	slog.Debug("[FSM][Dispatch] states", "states", states, "current", fsm.current)
 	for index := range states {
 		source, ok := fsm.states[Path(path.Join(states[:index+1]...))]
 		if !ok {
