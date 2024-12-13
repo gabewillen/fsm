@@ -356,7 +356,7 @@ func TestNestedInitial(t *testing.T) {
 }
 
 func TestNestedTransitions(t *testing.T) {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
+	var entryCalls int
 	model := fsm.Model(
 		fsm.Initial("a"),
 		fsm.State("a",
@@ -370,13 +370,14 @@ func TestNestedTransitions(t *testing.T) {
 			),
 		),
 		fsm.State("b",
-			fsm.Initial("c"),
-			fsm.State("c"),
-		),
-		fsm.Transition(
-			fsm.On("b"),
-			fsm.Source("a"),
-			fsm.Target("b"),
+			fsm.Initial("c", fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
+				entryCalls++
+			})),
+			fsm.Transition(
+				fsm.On("b"),
+				fsm.Source("../a"),
+				fsm.Target("../b"),
+			),
 		),
 	)
 	f := fsm.New(context.Background(), model)
@@ -392,6 +393,10 @@ func TestNestedTransitions(t *testing.T) {
 	f.Dispatch("b", nil)
 	if f.State().Name() != "b/c" {
 		t.Error("fsm state is not b", "state", f.State().Name())
+		return
+	}
+	if entryCalls != 1 {
+		t.Error("entryCalls not called", "entryCalls", entryCalls)
 		return
 	}
 }

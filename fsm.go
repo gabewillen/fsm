@@ -266,8 +266,9 @@ func New(ctx context.Context, model *ModelBuilder) *FSM {
 
 func asPath(id string) Path {
 	cleanedPath := path.Clean(id)
-	if strings.HasPrefix(cleanedPath, ".") {
-		slog.Warn("[fsm] Path cannot start with a dot, this will be removed and will likely result in an invalid model", "path", id)
+
+	if strings.HasPrefix(cleanedPath, ".") && !strings.HasPrefix(cleanedPath, "..") {
+		slog.Warn("[fsm] Path cannot start with a single dot, this will be removed and will likely result in an invalid model", "path", id)
 		cleanedPath = cleanedPath[1:]
 	}
 	return Path(cleanedPath)
