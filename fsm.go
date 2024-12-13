@@ -18,6 +18,17 @@ type Context struct {
 	context.Context
 }
 
+func (ctx *Context) Broadcast(event Event, data any) {
+	machines, ok := ctx.Value(broadcastKey).([]*FSM)
+	if !ok {
+		slog.Warn("[fsm][Broadcast] no machines found in context")
+		return
+	}
+	for _, machine := range machines {
+		machine.Dispatch(event, data)
+	}
+}
+
 //	type Event interface {
 //		Node
 //		Kind() string
@@ -228,20 +239,26 @@ type FSM struct {
 
 type Buildable func(*ModelBuilder)
 
+var broadcastKey = Context{}
+
 // New creates a new finite state machine having the specified initial state.
-func New(context context.Context, stateMachineModel *ModelBuilder) *FSM {
+func New(ctx context.Context, model *ModelBuilder) *FSM {
+	machines, ok := ctx.Value(broadcastKey).([]*FSM)
+	if !ok {
+		machines = []*FSM{}
+	}
 	fsm := &FSM{
 		Modeled: &Modeled{
 			behavior: &behavior{
-				action:    stateMachineModel.behavior.action,
+				action:    model.behavior.action,
 				execution: sync.WaitGroup{},
 				mutex:     &sync.Mutex{},
 			},
-			states: stateMachineModel.states,
+			states: model.states,
 		},
-		ctx:       context,
 		listeners: map[int]func(Trace){},
 	}
+	fsm.ctx = context.WithValue(ctx, broadcastKey, append(machines, fsm))
 	fsm.Modeled.behavior.execute(fsm, "", nil)
 	return fsm
 }
@@ -471,7 +488,6 @@ func Choice(transitions ...Buildable) Buildable {
 	}
 }
 
-// Check is an external condition that allows a Transition only if fn returns true.
 func Guard(fn Constraint) Buildable {
 	return func(model *ModelBuilder) {
 		if model.transition == nil {
