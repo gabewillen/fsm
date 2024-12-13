@@ -25,7 +25,7 @@ func (ctx *Context) Broadcast(event Event, data any) {
 		return
 	}
 	for _, machine := range machines {
-		machine.Dispatch(event, data)
+		go machine.Dispatch(event, data)
 	}
 }
 
