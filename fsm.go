@@ -19,7 +19,7 @@ type Context struct {
 }
 
 func (ctx *Context) Broadcast(event Event, data any) {
-	machines, ok := ctx.Value(broadcastKey).([]*FSM)
+	machines, ok := ctx.Value(broadcastKey).(map[int]*FSM)
 	if !ok {
 		slog.Warn("[fsm][Broadcast] no machines found in context")
 		return
@@ -233,7 +233,7 @@ type Trace struct {
 // FSM is a finite state machine.
 type FSM struct {
 	*Modeled
-	ctx       context.Context
+	ctx       Context
 	listeners map[int]func(Trace)
 }
 
@@ -243,9 +243,9 @@ var broadcastKey = Context{}
 
 // New creates a new finite state machine having the specified initial state.
 func New(ctx context.Context, model *ModelBuilder) *FSM {
-	machines, ok := ctx.Value(broadcastKey).([]*FSM)
+	machines, ok := ctx.Value(broadcastKey).(map[int]*FSM)
 	if !ok {
-		machines = []*FSM{}
+		machines = map[int]*FSM{}
 	}
 	fsm := &FSM{
 		Modeled: &Modeled{
@@ -258,7 +258,8 @@ func New(ctx context.Context, model *ModelBuilder) *FSM {
 		},
 		listeners: map[int]func(Trace){},
 	}
-	fsm.ctx = context.WithValue(ctx, broadcastKey, append(machines, fsm))
+	machines[len(machines)] = fsm
+	fsm.ctx = Context{Context: context.WithValue(ctx, broadcastKey, machines), FSM: fsm}
 	fsm.Modeled.behavior.execute(fsm, "", nil)
 	return fsm
 }
@@ -279,8 +280,7 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 			currentPath = model.state.path
 		}
 		switch any(name).(type) {
-		case Path:
-		case string:
+		case string, Path:
 			id := asPath(any(name).(string))
 			initialPath := Path(path.Join(string(currentPath), string(InitialPath)))
 			initial, ok := model.states[initialPath]
@@ -517,7 +517,6 @@ func Submachine(submachine *ModelBuilder) Buildable {
 				submachineState: model.state,
 			},
 			listeners: map[int]func(Trace){},
-			ctx:       context.Background(),
 		}
 	}
 }
@@ -732,11 +731,8 @@ func (fsm *FSM) Dispatch(event Event, data any) (any, bool) {
 	return nil, false
 }
 
-func (fsm *FSM) Context() Context {
-	return Context{
-		FSM:     fsm,
-		Context: fsm.ctx,
-	}
+func (fsm *FSM) Context() *Context {
+	return &fsm.ctx
 }
 
 func Model(elements ...Buildable) *ModelBuilder {

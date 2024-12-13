@@ -395,3 +395,24 @@ func TestNestedTransitions(t *testing.T) {
 		return
 	}
 }
+
+func TestBroadcast(t *testing.T) {
+	a := fsm.Model(
+		fsm.Initial("a"),
+		fsm.State("a"),
+	)
+	b := fsm.Model(
+		fsm.Initial("b"),
+		fsm.State("b"),
+	)
+	c := fsm.Model(
+		fsm.Initial("c"),
+		fsm.State("c"),
+	)
+	aFSM := fsm.New(context.Background(), a)
+	bFSM := fsm.New(aFSM.Context(), b)
+	cFSM := fsm.New(bFSM.Context(), c)
+	aFSM.Dispatch("a", nil)
+	bFSM.Dispatch("b", nil)
+	cFSM.Context().Broadcast("c", nil)
+}
