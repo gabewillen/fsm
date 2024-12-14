@@ -608,6 +608,7 @@ func (f *FSM) notify(trace Trace) bool {
 }
 
 func (fsm *FSM) transition(current *state, transition *transition, event Event, data any) (any, bool) {
+	slog.Debug("[fsm][transition] transition", "transition", transition, "current", current, "event", event)
 	var ok bool
 	var target *state
 	if fsm == nil {
@@ -644,7 +645,6 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event, 
 		} else {
 			enter = strings.Split(strings.TrimPrefix(string(transition.target), string(transition.source)), "/")
 		}
-		slog.Debug("[fsm][transition] enter", "enter", enter)
 		for index := range enter {
 			current, ok = fsm.states[Path(path.Join(enter[:index+1]...))]
 			if ok {
@@ -775,8 +775,8 @@ func NewModel(elements ...Buildable) *Model {
 	}
 	builder.Model.behavior.action = func(ctx Context, event Event, data any) {
 		ctx.mutex.Lock()
-		defer ctx.mutex.Unlock()
 		ctx.initial(nil, event, data)
+		ctx.mutex.Unlock()
 	}
 	return builder.Model
 }
