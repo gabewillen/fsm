@@ -627,7 +627,13 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event, 
 		}
 		transition.effect.execute(fsm, event, data)
 		transition.effect.wait()
-		enter := strings.Split(strings.TrimPrefix(string(transition.target), string(transition.source)), "/")
+		var enter []string
+		if transition.kind == SelfKind {
+			enter = []string{string(transition.target)}
+		} else {
+			enter = strings.Split(strings.TrimPrefix(string(transition.target), string(transition.source)), "/")
+		}
+		slog.Debug("[fsm][transition] enter", "enter", enter)
 		for index := range enter {
 			current, ok = fsm.states[Path(path.Join(enter[:index+1]...))]
 			if ok {

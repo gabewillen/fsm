@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gabewillen/fsm"
 )
@@ -420,4 +421,47 @@ func TestBroadcast(t *testing.T) {
 	aFSM.Dispatch("a", nil)
 	bFSM.Dispatch("b", nil)
 	cFSM.Context().Broadcast("c", nil)
+}
+
+func TestSelfTransition(t *testing.T) {
+	entry, exit, activity := 0, 0, 0
+
+	model := fsm.Model(
+		fsm.Initial("a",
+			fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
+				entry++
+			}),
+			fsm.Activity(func(ctx fsm.Context, event fsm.Event, data interface{}) {
+				activity++
+			}),
+			fsm.Exit(func(ctx fsm.Context, event fsm.Event, data interface{}) {
+				exit++
+			}),
+		),
+		fsm.Transition(
+			fsm.On("a"),
+			fsm.Source("a"),
+			fsm.Target("a"),
+		),
+	)
+	f := fsm.New(context.Background(), model)
+	f.State()
+	if entry != 1 {
+		t.Fatal("Entry action not called")
+	}
+	time.Sleep(1 * time.Second)
+	if activity != 1 {
+		t.Fatal("Activity action not called")
+	}
+	f.Dispatch("a", nil)
+	if exit != 1 {
+		t.Fatal("Exit action not called")
+	}
+	if entry != 2 {
+		t.Fatal("Entry action not called", "entry", entry)
+	}
+	time.Sleep(1 * time.Second)
+	if activity != 2 {
+		t.Fatal("Activity action not called", "activity", activity)
+	}
 }
