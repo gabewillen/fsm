@@ -13,7 +13,7 @@ import (
 func TestFSM(t *testing.T) {
 	// slog.SetLogLoggerLevel(slog.LevelDebug)
 
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("foo"),
 		fsm.State(
 			"foo",
@@ -51,7 +51,7 @@ func TestFSM(t *testing.T) {
 
 func TestGuard(t *testing.T) {
 	check := false
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("foo"),
 		fsm.State("foo"),
 		fsm.Transition(
@@ -78,7 +78,7 @@ func TestGuard(t *testing.T) {
 func TestChoice(t *testing.T) {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 	check := false
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("foo"),
 		fsm.State("foo"),
 		fsm.State("bar"),
@@ -118,7 +118,7 @@ func TestChoice(t *testing.T) {
 
 func TestEffect(t *testing.T) {
 	call := false
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("foo"),
 		fsm.State("foo"),
 		fsm.State("bar"),
@@ -142,7 +142,7 @@ func TestEffect(t *testing.T) {
 }
 
 func TestOnTransition(t *testing.T) {
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("foo"),
 		fsm.State("foo"),
 		fsm.Transition(
@@ -179,7 +179,7 @@ func TestActivityTermination(t *testing.T) {
 	wg.Add(1)
 	activityRunning := false
 
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("foo",
 			fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				t.Log("Entry action started")
@@ -222,7 +222,7 @@ func TestActivityTermination(t *testing.T) {
 }
 
 func TestSubmachine(t *testing.T) {
-	a := fsm.Model(
+	a := fsm.NewModel(
 		fsm.Initial("foo"),
 		fsm.State(
 			"foo",
@@ -236,7 +236,7 @@ func TestSubmachine(t *testing.T) {
 			fsm.Target("bar"),
 		),
 	)
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("a"),
 		fsm.State("a", fsm.Submachine(a)),
 		fsm.State("b"),
@@ -289,7 +289,7 @@ func TestNestedStates(t *testing.T) {
 		})
 		return fsm.State(name, append(states, entry, exit)...)
 	}
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("a/b/c"),
 		testState("a", testState("b", testState("c"))),
 		testState("bar"),
@@ -345,7 +345,7 @@ func TestNestedStates(t *testing.T) {
 
 func TestNestedInitial(t *testing.T) {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("a"),
 		fsm.State("a", fsm.Initial("b"), fsm.State("b")),
 	)
@@ -358,7 +358,7 @@ func TestNestedInitial(t *testing.T) {
 
 func TestNestedTransitions(t *testing.T) {
 	var entryCalls int
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("a"),
 		fsm.State("a",
 			fsm.Initial("b"),
@@ -403,15 +403,15 @@ func TestNestedTransitions(t *testing.T) {
 }
 
 func TestBroadcast(t *testing.T) {
-	a := fsm.Model(
+	a := fsm.NewModel(
 		fsm.Initial("a"),
 		fsm.State("a"),
 	)
-	b := fsm.Model(
+	b := fsm.NewModel(
 		fsm.Initial("b"),
 		fsm.State("b"),
 	)
-	c := fsm.Model(
+	c := fsm.NewModel(
 		fsm.Initial("c"),
 		fsm.State("c"),
 	)
@@ -426,7 +426,7 @@ func TestBroadcast(t *testing.T) {
 func TestSelfTransition(t *testing.T) {
 	entry, exit, activity := 0, 0, 0
 
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("a",
 			fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
 				entry++
@@ -467,7 +467,7 @@ func TestSelfTransition(t *testing.T) {
 }
 
 func TestInitialWithChoice(t *testing.T) {
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial(fsm.Choice(fsm.Transition(fsm.Target("b")), fsm.Transition(fsm.Target("c")))),
 		fsm.State("a"),
 		fsm.State("b"),
@@ -481,7 +481,7 @@ func TestInitialWithChoice(t *testing.T) {
 
 func TestInternalTransition(t *testing.T) {
 	effectCalled := false
-	model := fsm.Model(
+	model := fsm.NewModel(
 		fsm.Initial("a"),
 		fsm.State("a"),
 		fsm.Transition(

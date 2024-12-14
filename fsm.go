@@ -177,7 +177,7 @@ type transition struct {
 	source Path
 }
 
-type Modeled struct {
+type Model struct {
 	*behavior
 	states          map[Path]*state
 	current         Path
@@ -189,14 +189,14 @@ type builderContext struct {
 	transition *transition
 }
 
-type ModelBuilder struct {
-	*Modeled
+type modelBuilder struct {
+	*Model
 	state      *state
 	transition *transition
 	stack      []builderContext
 }
 
-func (builder *ModelBuilder) push(state *state, transition *transition) *ModelBuilder {
+func (builder *modelBuilder) push(state *state, transition *transition) *modelBuilder {
 	builder.stack = append(builder.stack, builderContext{
 		state:      state,
 		transition: transition,
@@ -206,7 +206,7 @@ func (builder *ModelBuilder) push(state *state, transition *transition) *ModelBu
 	return builder
 }
 
-func (builder *ModelBuilder) pop() *ModelBuilder {
+func (builder *modelBuilder) pop() *modelBuilder {
 	builder.stack = builder.stack[:len(builder.stack)-1]
 	if len(builder.stack) > 0 {
 		builder.state = builder.stack[len(builder.stack)-1].state
@@ -232,23 +232,23 @@ type Trace struct {
 
 // FSM is a finite state machine.
 type FSM struct {
-	*Modeled
+	*Model
 	ctx       Context
 	listeners map[int]func(Trace)
 }
 
-type Buildable func(*ModelBuilder)
+type Buildable func(*modelBuilder)
 
 var broadcastKey = Context{}
 
 // New creates a new finite state machine having the specified initial state.
-func New(ctx context.Context, model *ModelBuilder) *FSM {
+func New(ctx context.Context, model *Model) *FSM {
 	machines, ok := ctx.Value(broadcastKey).(map[int]*FSM)
 	if !ok {
 		machines = map[int]*FSM{}
 	}
 	fsm := &FSM{
-		Modeled: &Modeled{
+		Model: &Model{
 			behavior: &behavior{
 				action:    model.behavior.action,
 				execution: sync.WaitGroup{},
@@ -260,7 +260,7 @@ func New(ctx context.Context, model *ModelBuilder) *FSM {
 	}
 	machines[len(machines)] = fsm
 	fsm.ctx = Context{Context: context.WithValue(ctx, broadcastKey, machines), FSM: fsm}
-	fsm.Modeled.behavior.execute(fsm, "", nil)
+	fsm.Model.behavior.execute(fsm, "", nil)
 	return fsm
 }
 
@@ -275,7 +275,7 @@ func asPath(id string) Path {
 }
 
 func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		currentPath := Path("")
 		if model.state != nil {
 			currentPath = model.state.path
@@ -326,7 +326,7 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 
 func State(name string, partialElements ...Buildable) Buildable {
 	statePath := asPath(name)
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		if model.state != nil {
 			statePath = Path(path.Join(string(model.state.path), string(statePath)))
 		}
@@ -348,7 +348,7 @@ func State(name string, partialElements ...Buildable) Buildable {
 }
 
 func Entry(action Action) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		if model.state == nil {
 			slog.Warn("[fsm][Entry] called outside of a state, Entry can only be used inside of fsm.State(...)")
 			return
@@ -360,7 +360,7 @@ func Entry(action Action) Buildable {
 }
 
 func Activity(fn Action) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		if model.state == nil {
 			slog.Warn("[fsm][Activity] called outside of a state, Activity can only be used inside of fsm.State(...)")
 			return
@@ -372,7 +372,7 @@ func Activity(fn Action) Buildable {
 }
 
 func Exit(action Action) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		if model.state == nil {
 			slog.Warn("[fsm][Exit] called outside of a state, Exit can only be used inside of fsm.State(...)")
 			return
@@ -385,7 +385,7 @@ func Exit(action Action) Buildable {
 
 // Src defines the source States for a Transition.
 func Source(sourcePath Path) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		if model.transition == nil {
 			slog.Warn("[fsm][Source] called outside of a transition, Source can only be used inside of Transition(...)")
 			return
@@ -414,7 +414,7 @@ type Dispatchable interface {
 
 // On defines the Event that triggers a Transition.
 func On[E Dispatchable](events ...E) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		if model.transition == nil {
 			slog.Warn("[fsm][On] called outside of a transition, On can only be used inside of fsm.Transition(...)")
 			return
@@ -438,7 +438,7 @@ type Targetable interface {
 
 // Dst defines the new State the machine switches to after a Transition.
 func Target[T Targetable](target T) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		if model.transition == nil {
 			slog.Warn("[fsm][Target] called outside of a transition, Target can only be used inside of Transition(...)")
 			return
@@ -465,7 +465,7 @@ func Target[T Targetable](target T) Buildable {
 }
 
 func Choice(transitions ...Buildable) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		choicePath := Path("")
 		if model.state != nil {
 			choicePath = Path(path.Join(string(model.state.path), string(choicePath)))
@@ -492,7 +492,7 @@ func Choice(transitions ...Buildable) Buildable {
 }
 
 func Guard(fn Constraint) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		if model.transition == nil {
 			slog.Warn("[fsm][Guard] called outside of a transition, Guard can only be used inside of Transition(...)")
 			return
@@ -503,14 +503,14 @@ func Guard(fn Constraint) Buildable {
 	}
 }
 
-func Submachine(submachine *ModelBuilder) Buildable {
-	return func(model *ModelBuilder) {
+func Submachine(submachine *Model) Buildable {
+	return func(model *modelBuilder) {
 		if model.state == nil {
 			slog.Warn("[fsm][Submachine] called outside of a state, Submachine can only be used inside of State(...)")
 			return
 		}
 		model.state.submachine = &FSM{
-			Modeled: &Modeled{
+			Model: &Model{
 				behavior: &behavior{
 					action:    submachine.behavior.action,
 					execution: sync.WaitGroup{},
@@ -525,7 +525,7 @@ func Submachine(submachine *ModelBuilder) Buildable {
 }
 
 func Effect(fn Action) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		if model.transition == nil {
 			slog.Warn("[fsm][Effect] called outside of a transition, Effect can only be used inside of Transition(...)")
 			return
@@ -537,7 +537,7 @@ func Effect(fn Action) Buildable {
 }
 
 func Transition(nodes ...Buildable) Buildable {
-	return func(model *ModelBuilder) {
+	return func(model *modelBuilder) {
 		transition := &transition{}
 		model.push(model.state, transition)
 		for _, node := range nodes {
@@ -744,9 +744,9 @@ func (fsm *FSM) Context() *Context {
 	return &fsm.ctx
 }
 
-func Model(elements ...Buildable) *ModelBuilder {
-	builder := &ModelBuilder{
-		Modeled: &Modeled{
+func NewModel(elements ...Buildable) *Model {
+	builder := &modelBuilder{
+		Model: &Model{
 			behavior: &behavior{
 				mutex: &sync.Mutex{},
 			},
@@ -762,8 +762,8 @@ func Model(elements ...Buildable) *ModelBuilder {
 	for _, buildable := range elements {
 		buildable(builder)
 	}
-	builder.Modeled.behavior.action = func(ctx Context, event Event, data any) {
+	builder.Model.behavior.action = func(ctx Context, event Event, data any) {
 		ctx.initial(nil, event, data)
 	}
-	return builder
+	return builder.Model
 }
