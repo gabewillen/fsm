@@ -736,7 +736,8 @@ func (fsm *FSM) Dispatch(event Event, data any) (any, bool) {
 			if !transition.guard.evaluate(fsm, event, data) {
 				continue
 			}
-			return fsm.transition(current, transition, event, data)
+			data, ok = fsm.transition(current, transition, event, data)
+			return data, ok
 		}
 	}
 

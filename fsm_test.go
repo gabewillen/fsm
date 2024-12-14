@@ -366,7 +366,7 @@ func TestNestedTransitions(t *testing.T) {
 			fsm.State("c"),
 			fsm.Transition(
 				fsm.On("a"),
-				fsm.Source("a"),
+				fsm.Source("b"),
 				fsm.Target("c"),
 			),
 		),
@@ -383,22 +383,18 @@ func TestNestedTransitions(t *testing.T) {
 	)
 	f := fsm.New(context.Background(), model)
 	if f.State().Name() != "a/b" {
-		t.Error("fsm state is not initial state a/b", "state", f.State().Name())
-		return
+		t.Fatal("fsm state is not initial state a/b", "state", f.State().Name())
 	}
 	f.Dispatch("a", nil)
 	if f.State().Name() != "a/c" {
-		t.Error("fsm state is not a/c", "state", f.State().Name())
-		return
+		t.Fatal("fsm state is not a/c", "state", f.State().Name())
 	}
 	f.Dispatch("b", nil)
 	if f.State().Name() != "b/c" {
-		t.Error("fsm state is not b", "state", f.State().Name())
-		return
+		t.Fatal("fsm state is not b", "state", f.State().Name())
 	}
 	if entryCalls != 1 {
-		t.Error("entryCalls not called", "entryCalls", entryCalls)
-		return
+		t.Fatal("entryCalls not called", "entryCalls", entryCalls)
 	}
 }
 
@@ -496,5 +492,49 @@ func TestInternalTransition(t *testing.T) {
 	f.Dispatch("a", nil)
 	if !effectCalled {
 		t.Fatal("Effect not called")
+	}
+}
+
+func TestTransitionFromNestedEntry(t *testing.T) {
+	var entryCalls int
+	model := fsm.NewModel(
+		fsm.Initial("a"),
+		fsm.State("a",
+			fsm.Initial("b"),
+			fsm.State("b", fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
+				go ctx.Dispatch("a", nil)
+			})),
+			fsm.State("c"),
+			fsm.Transition(
+				fsm.On("a"),
+				fsm.Source("b"),
+				fsm.Target("c"),
+			),
+		),
+		fsm.State("b",
+			fsm.Initial("c", fsm.Entry(func(ctx fsm.Context, event fsm.Event, data interface{}) {
+				entryCalls++
+			})),
+			fsm.Transition(
+				fsm.On("b"),
+				fsm.Source("../a"),
+				fsm.Target("../b"),
+			),
+		),
+	)
+	f := fsm.New(context.Background(), model)
+	if f.State().Name() != "a/b" {
+		t.Fatal("fsm state is not initial state a/b", "state", f.State().Name())
+	}
+	f.Dispatch("a", nil)
+	if f.State().Name() != "a/c" {
+		t.Fatal("fsm state is not a/c", "state", f.State().Name())
+	}
+	f.Dispatch("b", nil)
+	if f.State().Name() != "b/c" {
+		t.Fatal("fsm state is not b", "state", f.State().Name())
+	}
+	if entryCalls != 1 {
+		t.Fatal("entryCalls not called", "entryCalls", entryCalls)
 	}
 }
