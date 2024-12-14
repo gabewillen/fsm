@@ -774,6 +774,8 @@ func NewModel(elements ...Buildable) *Model {
 		buildable(builder)
 	}
 	builder.Model.behavior.action = func(ctx Context, event Event, data any) {
+		ctx.mutex.Lock()
+		defer ctx.mutex.Unlock()
 		ctx.initial(nil, event, data)
 	}
 	return builder.Model
