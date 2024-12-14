@@ -554,7 +554,7 @@ func Transition(nodes ...Buildable) Buildable {
 		}
 		model.pop()
 		slog.Debug("[fsm][Transition] transition", "transition", transition)
-		if model.state != nil {
+		if model.state != nil && transition.source == "" {
 			transition.source = model.state.path
 			model.state.transitions = append(model.state.transitions, transition)
 		} else if transition.target == "" {
@@ -774,9 +774,7 @@ func NewModel(elements ...Buildable) *Model {
 		buildable(builder)
 	}
 	builder.Model.behavior.action = func(ctx Context, event Event, data any) {
-		ctx.mutex.Lock()
 		ctx.initial(nil, event, data)
-		ctx.mutex.Unlock()
 	}
 	return builder.Model
 }
