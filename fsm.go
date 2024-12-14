@@ -259,6 +259,15 @@ func New(ctx context.Context, model *Model) *FSM {
 		listeners: map[int]func(Trace){},
 	}
 	machines[len(machines)] = fsm
+	return Init(ctx, fsm)
+}
+
+func Init(ctx context.Context, fsm *FSM) *FSM {
+	machines, ok := ctx.Value(broadcastKey).(map[int]*FSM)
+	if !ok {
+		machines = map[int]*FSM{}
+	}
+	machines[len(machines)] = fsm
 	fsm.ctx = Context{Context: context.WithValue(ctx, broadcastKey, machines), FSM: fsm}
 	fsm.Model.behavior.execute(fsm, "", nil)
 	return fsm
