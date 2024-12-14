@@ -73,8 +73,13 @@ type active struct {
 	cancel  context.CancelFunc
 }
 
+type fsm interface {
+	Dispatch(event Event) bool
+}
+
 // FSM is a finite state machine.
 type FSM struct {
+	fsm
 	*Model
 	ctx       Context
 	current   *state
@@ -293,7 +298,7 @@ func (fsm *FSM) wait(behavior *behavior) {
 	<-active.channel
 }
 
-func Dispatch[T Dispatchable](fsm *FSM, evt T) bool {
+func Dispatch[T Dispatchable](fsm fsm, evt T) bool {
 	if fsm == nil {
 		slog.Error("[FSM][Dispatch] FSM is nil")
 		return false
