@@ -449,7 +449,7 @@ func TestSelfTransition(t *testing.T) {
 	if entry != 1 {
 		t.Fatal("Entry action not called")
 	}
-	time.Sleep(1 * time.Second)
+	time.Sleep(1 * time.Millisecond)
 	if activity != 1 {
 		t.Fatal("Activity action not called")
 	}
@@ -460,8 +460,41 @@ func TestSelfTransition(t *testing.T) {
 	if entry != 2 {
 		t.Fatal("Entry action not called", "entry", entry)
 	}
-	time.Sleep(1 * time.Second)
+	time.Sleep(1 * time.Millisecond)
 	if activity != 2 {
 		t.Fatal("Activity action not called", "activity", activity)
+	}
+}
+
+func TestInitialWithChoice(t *testing.T) {
+	model := fsm.Model(
+		fsm.Initial(fsm.Choice(fsm.Transition(fsm.Target("b")), fsm.Transition(fsm.Target("c")))),
+		fsm.State("a"),
+		fsm.State("b"),
+		fsm.State("c"),
+	)
+	f := fsm.New(context.Background(), model)
+	if f.State().Name() != "b" {
+		t.Fatal("fsm state is not b", "state", f.State().Name())
+	}
+}
+
+func TestInternalTransition(t *testing.T) {
+	effectCalled := false
+	model := fsm.Model(
+		fsm.Initial("a"),
+		fsm.State("a"),
+		fsm.Transition(
+			fsm.On("a"),
+			fsm.Source("a"),
+			fsm.Effect(func(ctx fsm.Context, event fsm.Event, data interface{}) {
+				effectCalled = true
+			}),
+		),
+	)
+	f := fsm.New(context.Background(), model)
+	f.Dispatch("a", nil)
+	if !effectCalled {
+		t.Fatal("Effect not called")
 	}
 }

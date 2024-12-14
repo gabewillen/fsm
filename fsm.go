@@ -280,21 +280,27 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 		if model.state != nil {
 			currentPath = model.state.path
 		}
+		initialPath := Path(path.Join(string(currentPath), string(InitialPath)))
+		initial, ok := model.states[initialPath]
+		if !ok {
+			initial = &state{
+				path:        initialPath,
+				kind:        InitialKind,
+				transitions: []*transition{},
+			}
+			model.states[initialPath] = initial
+		}
+		initialTransition := &transition{
+			events: []Event{},
+			kind:   ExternalKind,
+			source: initialPath,
+		}
+		var target *state
 		switch any(name).(type) {
 		case string, Path:
 			id := asPath(any(name).(string))
-			initialPath := Path(path.Join(string(currentPath), string(InitialPath)))
-			initial, ok := model.states[initialPath]
-			if !ok {
-				initial = &state{
-					path:        initialPath,
-					kind:        InitialKind,
-					transitions: []*transition{},
-				}
-				model.states[initialPath] = initial
-			}
 			targetPath := Path(path.Join(string(currentPath), string(id)))
-			target, ok := model.states[targetPath]
+			target, ok = model.states[targetPath]
 			if !ok {
 				target = &state{
 					path:        targetPath,
@@ -303,22 +309,18 @@ func Initial[T Targetable](name T, partialElements ...Buildable) Buildable {
 				}
 				model.states[targetPath] = target
 			}
-			transition := &transition{
-				events: []Event{},
-				kind:   ExternalKind,
-				source: initialPath,
-				target: target.path,
-			}
-			model.push(target, transition)
-			for _, partial := range partialElements {
-				partial(model)
-			}
-			model.pop()
-			initial.transitions = append(initial.transitions, transition)
+			initialTransition.target = targetPath
+
 		case Buildable:
 			partial := any(name).(Buildable)
+			partialElements = append(partialElements, partial)
+		}
+		model.push(target, initialTransition)
+		for _, partial := range partialElements {
 			partial(model)
 		}
+		model.pop()
+		initial.transitions = append(initial.transitions, initialTransition)
 	}
 }
 
