@@ -702,9 +702,10 @@ func (fsm *FSM) Dispatch(event Event, data any) (any, bool) {
 	if fsm == nil {
 		return nil, false
 	}
+
+	fsm.wait()
 	fsm.mutex.Lock()
 	defer fsm.mutex.Unlock()
-	fsm.wait()
 	current, ok := fsm.states[fsm.current]
 	if !ok {
 		return nil, false
@@ -773,6 +774,8 @@ func NewModel(elements ...Buildable) *Model {
 		buildable(builder)
 	}
 	builder.Model.behavior.action = func(ctx Context, event Event, data any) {
+		ctx.mutex.Lock()
+		defer ctx.mutex.Unlock()
 		ctx.initial(nil, event, data)
 	}
 	return builder.Model
