@@ -702,14 +702,14 @@ func (fsm *FSM) Dispatch(event Event, data any) (any, bool) {
 	if fsm == nil {
 		return nil, false
 	}
+	fsm.mutex.Lock()
+	defer fsm.mutex.Unlock()
 	fsm.wait()
-
 	current, ok := fsm.states[fsm.current]
 	if !ok {
 		return nil, false
 	}
-	fsm.mutex.Lock()
-	defer fsm.mutex.Unlock()
+
 	states := strings.Split(string(fsm.current), "/")
 	for index := range states {
 		source, ok := fsm.states[Path(path.Join(states[:index+1]...))]
