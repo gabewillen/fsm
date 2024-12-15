@@ -2,41 +2,190 @@ package fsm
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path"
 	"slices"
 	"strings"
 	"sync"
-
-	"github.com/gabewillen/fsm/kind"
 )
+
+/******************** Path ********************/
+
+type Path string
+
+func pathFromName(name string) Path {
+	cleanedPath := path.Clean(name)
+
+	if strings.HasPrefix(cleanedPath, ".") && !strings.HasPrefix(cleanedPath, "..") {
+		slog.Warn("[fsm] Path cannot start with a single dot, this will be removed and will likely result in an invalid model", "path", name)
+		cleanedPath = cleanedPath[1:]
+	}
+	return Path(cleanedPath)
+}
+
+/******************** Kinds ********************/
+
+type Kind string
 
 const (
-	initialPath Path = ".initial"
-	AnyPath     Path = "*"
+	StateKind      Kind = "State"
+	ChoiceKind     Kind = "Choice"
+	InitialKind    Kind = "Initial"
+	FinalKind      Kind = "Final"
+	ExternalKind   Kind = "External"
+	LocalKind      Kind = "Local"
+	InternalKind   Kind = "Internal"
+	SelfKind       Kind = "Self"
+	TransitionKind Kind = "Transition"
 )
 
-type builderContext struct {
-	state      *state
-	transition *transition
+/******************** Element ********************/
+
+type element interface{}
+
+type Element = func(builder *Builder)
+
+/******************** Events ********************/
+
+type Event interface {
+	element
+	Kind() Kind
+	Data() any
 }
 
-type ModelBuilder struct {
-	*Model
-	state      *state
-	transition *transition
-	stack      []builderContext
+type event struct {
+	Event
+	kind Kind
+	data any
 }
 
-func (builder *ModelBuilder) path() Path {
-	if builder.state == nil {
-		return ""
+type Sendable interface {
+	*event | string
+}
+
+func (e *event) Kind() Kind {
+	return e.kind
+}
+
+func (e *event) Data() any {
+	return e.data
+}
+
+func (e *event) New(data any) Event {
+	return &event{kind: e.kind, data: data}
+}
+
+func NewEvent(kind Kind, data any) Event {
+	return &event{kind: kind, data: data}
+}
+
+var AnyEvent = NewEvent(Kind("*"), nil)
+
+/******************** Context ********************/
+
+type Context struct {
+	context.Context
+	*Process
+}
+
+/******************** Constraints ********************/
+
+type Expression func(Context, Event) bool
+
+type constraint struct {
+	expr Expression
+}
+
+/******************** Behavior ********************/
+
+type Action func(Context, Event)
+
+type behavior struct {
+	Context
+	action Action
+}
+
+/******************** States ********************/
+
+type state struct {
+	path        Path
+	kind        Kind
+	entry       *behavior
+	activity    *behavior
+	exit        *behavior
+	transitions []*transition
+	submachine  *Model
+}
+
+func (state *state) Path() Path {
+	return state.path
+}
+
+func (state *state) Submachine() *Model {
+	return state.submachine
+}
+
+/******************** Transitions ********************/
+
+type transition struct {
+	events []Event
+	kind   Kind
+	guard  *constraint
+	effect *behavior
+	target Path
+	source Path
+}
+
+/******************** Model ********************/
+
+type Model struct {
+	*behavior
+	states          map[Path]*state
+	submachineState *state
+}
+
+// New creates a new finite state machine having the specified initial state.
+func New(elements ...Element) *Model {
+	builder := &Builder{
+		model: &Model{
+			behavior: &behavior{},
+			states: map[Path]*state{
+				Path(".initial"): {
+					kind:        InitialKind,
+					path:        Path(".initial"),
+					transitions: []*transition{},
+				},
+			},
+		},
 	}
-	return builder.state.path
+	for _, buildable := range elements {
+		buildable(builder)
+	}
+	builder.model.behavior.action = func(ctx Context, event Event) {
+		ctx.mutex.Lock()
+		defer ctx.mutex.Unlock()
+		ctx.state = ctx.initial(nil, event)
+	}
+	return builder.model
 }
 
-func (builder *ModelBuilder) push(state *state, transition *transition) *ModelBuilder {
-	builder.stack = append(builder.stack, builderContext{
+/******************** Builder ********************/
+
+type stack struct {
+	state      *state
+	transition *transition
+}
+
+type Builder struct {
+	model      *Model
+	state      *state
+	transition *transition
+	stack      []stack
+}
+
+func (builder *Builder) push(state *state, transition *transition) *Builder {
+	builder.stack = append(builder.stack, stack{
 		state:      state,
 		transition: transition,
 	})
@@ -45,7 +194,7 @@ func (builder *ModelBuilder) push(state *state, transition *transition) *ModelBu
 	return builder
 }
 
-func (builder *ModelBuilder) pop() *ModelBuilder {
+func (builder *Builder) pop() *Builder {
 	builder.stack = builder.stack[:len(builder.stack)-1]
 	if len(builder.stack) > 0 {
 		builder.state = builder.stack[len(builder.stack)-1].state
@@ -57,99 +206,104 @@ func (builder *ModelBuilder) pop() *ModelBuilder {
 	return builder
 }
 
-// type model struct {
-// 	*statemachine
-// }
-
-type Trace struct {
-	Kind         kind.Kind
-	Event        Event
-	CurrentState Path
-	TargetState  Path
-}
+/******************** Process ********************/
 
 type active struct {
 	channel chan struct{}
 	cancel  context.CancelFunc
 }
 
-type fsm interface {
-	Dispatch(event Event) bool
-}
-
-// FSM is a finite state machine.
-type FSM struct {
-	fsm
+type Process struct {
 	*Model
-	ctx       Context
-	current   *state
-	active    map[*behavior]*active
-	mutex     *sync.Mutex
-	listeners map[int]func(Trace)
+	state  *state
+	active map[*behavior]*active
+	mutex  *sync.Mutex
 }
 
-var broadcastKey = Context{}
+var empty = struct{}{}
 
-// New creates a new finite state machine having the specified initial state.
-func New(ctx context.Context, model *Model) *FSM {
+type activeSymbol struct{}
 
-	fsm := &FSM{
-		Model: &Model{
-			behavior: &behavior{
-				action: model.behavior.action,
-			},
-			states: model.states,
-		},
+var activeKey = activeSymbol{}
+
+var processPool = sync.Pool{
+	New: func() any {
+		return &Process{
+			active: map[*behavior]*active{},
+			mutex:  &sync.Mutex{},
+		}
+	},
+}
+
+func Execute(ctx context.Context, model *Model) *Process {
+	process := processPool.Get().(*Process)
+	process.Model = model
+	if model.submachineState == nil {
+		active, ok := ctx.Value(activeKey).(*sync.Map)
+		if !ok {
+			active = &sync.Map{}
+		}
+		active.Store(process, empty)
+
 	}
-	return Init(ctx, fsm)
+	process.Context = Context{Context: ctx, Process: process}
+	process.execute(process.Model.behavior, nil)
+	return process
 }
 
-func Init(ctx context.Context, fsm *FSM) *FSM {
-	machines, ok := ctx.Value(broadcastKey).(*sync.Map)
+func Terminate(process **Process) {
+	(*process).terminate((*process).behavior)
+	processPool.Put(*process)
+	*process = nil
+}
+
+func Send[T Sendable](process *Process, event T) bool {
+	if process == nil {
+		slog.Error("[FSM][Dispatch] FSM is nil")
+		return false
+	}
+	switch any(event).(type) {
+	case Event:
+		return process.Send(any(event).(Event))
+	case string:
+		return process.Send(NewEvent(Kind(any(event).(string)), nil))
+	}
+	return false
+}
+
+func (process *Process) Broadcast(event Event) {
+	active, ok := process.Value(activeKey).(*sync.Map)
 	if !ok {
-		machines = &sync.Map{}
+		slog.Warn("[fsm][Broadcast] no machines found in context")
+		return
 	}
-	machines.Store(fsm, struct{}{})
-	fsm.listeners = map[int]func(Trace){}
-	fsm.active = map[*behavior]*active{}
-	fsm.ctx = Context{Context: context.WithValue(ctx, broadcastKey, machines), FSM: fsm}
-	fsm.mutex = &sync.Mutex{}
-	fsm.execute(fsm.Model.behavior, nil)
-	return fsm
+	active.Range(func(value any, _ any) bool {
+		go value.(*Process).Send(event)
+		return true
+	})
 }
 
-func asPath(id string) Path {
-	cleanedPath := path.Clean(id)
-
-	if strings.HasPrefix(cleanedPath, ".") && !strings.HasPrefix(cleanedPath, "..") {
-		slog.Warn("[fsm] Path cannot start with a single dot, this will be removed and will likely result in an invalid model", "path", id)
-		cleanedPath = cleanedPath[1:]
+// Current returns the current state.
+func (process *Process) State() *state {
+	if process == nil {
+		return nil
 	}
-	return Path(cleanedPath)
+	process.wait(process.behavior)
+	return process.state
 }
 
-func (fsm *FSM) evaluate(element *constraint, event Event) bool {
+func (process *Process) evaluate(element *constraint, event Event) bool {
 	if element == nil {
 		return true
 	}
-	return element.expr(Context{FSM: fsm, Context: fsm.ctx}, event)
+	return element.expr(Context{Context: process, Process: process}, event)
 }
 
-func (f *FSM) notify(trace Trace) bool {
-	if f == nil {
-		return false
-	}
-	for _, listener := range f.listeners {
-		listener(trace)
-	}
-	return true
-}
-
-func (fsm *FSM) terminate(element *behavior) {
+func (process *Process) terminate(element *behavior) {
 	if element == nil {
 		return
 	}
-	active, ok := fsm.active[element]
+	active, ok := process.active[element]
 	if !ok {
 		return
 	}
@@ -157,105 +311,100 @@ func (fsm *FSM) terminate(element *behavior) {
 	<-active.channel
 }
 
-func (fsm *FSM) leave(state *state, event Event) {
+func (process *Process) exit(state *state, event Event) {
 	if state == nil {
 		return
 	}
 	slog.Debug("[state][leave] leave", "state", state.path, "event", event)
 	if state.submachine != nil {
-		fsm.terminate(state.submachine.behavior)
+		process.terminate(state.submachine.behavior)
 	}
-	fsm.terminate(state.activity)
-	<-fsm.execute(state.exit, event)
+	process.terminate(state.activity)
+	<-process.execute(state.exit, event)
 }
 
-func (fsm *FSM) enter(state *state, event Event) {
+func (process *Process) enter(state *state, event Event) {
 	slog.Debug("[state][enter] enter", "state", state, "event", event)
 	if state == nil {
 		return
 	}
-	<-fsm.execute(state.entry, event)
-	fsm.execute(state.activity, event)
+	<-process.execute(state.entry, event)
+	process.execute(state.activity, event)
 	if state.submachine != nil {
-		submachine := Init(fsm.ctx, state.submachine)
-		submachine.wait(submachine.behavior)
+		Execute(process, state.submachine)
 	}
 }
 
-func (fsm *FSM) execute(element *behavior, event Event) chan struct{} {
+func (process *Process) execute(element *behavior, event Event) chan struct{} {
+
 	channel := make(chan struct{})
-	if fsm == nil || element == nil || element.action == nil {
+	if process == nil || element == nil || element.action == nil {
 		close(channel)
 		return channel
 	}
-	current, ok := fsm.active[element]
+	current, ok := process.active[element]
 	if current == nil || !ok {
 		current = &active{}
-		fsm.active[element] = current
+		process.active[element] = current
 	}
 	var ctx context.Context
-	ctx, current.cancel = context.WithCancel(fsm.ctx)
+	ctx, current.cancel = context.WithCancel(process)
 	current.channel = channel
 	go func() {
-		element.action(Context{FSM: fsm, Context: ctx}, event)
+		element.action(Context{Context: ctx, Process: process}, event)
 		close(current.channel)
 	}()
 	return current.channel
 }
 
-func (fsm *FSM) transition(current *state, transition *transition, event Event) *state {
+func (process *Process) transition(current *state, transition *transition, event Event) *state {
 	slog.Debug("[fsm][transition] transition", "transition", transition, "current", current, "event", event)
 	var ok bool
 	var target *state
-	if fsm == nil {
+	if process == nil {
 		return nil
 	}
 	for transition != nil {
-		fsm.notify(Trace{
-			Kind:         kind.Transition,
-			Event:        event,
-			CurrentState: current.path,
-			TargetState:  transition.target,
-		})
 		switch transition.kind {
-		case kind.Internal:
-			<-fsm.execute(transition.effect, event)
+		case InternalKind:
+			<-process.execute(transition.effect, event)
 			return current
-		case kind.Self, kind.External:
+		case SelfKind, ExternalKind:
 			exit := strings.Split(string(current.path), "/")
 			for index := range exit {
-				current, ok = fsm.states[Path(path.Join(exit[:len(exit)-index]...))]
+				current, ok = process.states[Path(path.Join(exit[:len(exit)-index]...))]
 				if ok {
-					fsm.leave(current, event)
+					process.exit(current, event)
 				}
 			}
 		}
-		<-fsm.execute(transition.effect, event)
+		<-process.execute(transition.effect, event)
 		var enter []string
-		if transition.kind == kind.Self {
+		if transition.kind == SelfKind {
 			enter = []string{string(transition.target)}
 		} else {
 			enter = strings.Split(strings.TrimPrefix(string(transition.target), string(transition.source)), "/")
 		}
 		for index := range enter {
-			current, ok = fsm.states[Path(path.Join(enter[:index+1]...))]
+			current, ok = process.states[Path(path.Join(enter[:index+1]...))]
 			if ok {
-				fsm.enter(current, event)
+				process.enter(current, event)
 			}
 		}
-		if target, ok = fsm.states[transition.target]; ok && target != nil {
-			if target.kind == kind.Choice {
+		if target, ok = process.states[transition.target]; ok && target != nil {
+			if target.kind == ChoiceKind {
 				current = target
 				for _, choice := range target.transitions {
-					if !fsm.evaluate(choice.guard, event) {
+					if !process.evaluate(choice.guard, event) {
 						continue
 					}
+
 					transition = choice
 					break
 				}
 				continue
 			} else {
-				return fsm.initial(target, event)
+				return process.initial(target, event)
 			}
 		}
 		return nil
@@ -263,16 +412,16 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event) 
 	return nil
 }
 
-func (fsm *FSM) initial(state *state, event Event) *state {
-	if fsm == nil {
+func (process *Process) initial(state *state, event Event) *state {
+	if process == nil {
 		slog.Error("[FSM][initial] FSM is nil")
 		return nil
 	}
-	initialPath := initialName
+	initialPath := Path(".initial")
 	if state != nil {
-		initialPath = Path(path.Join(string(state.path), string(initialName)))
+		initialPath = Path(path.Join(string(state.path), string(initialPath)))
 	}
-	initial, ok := fsm.states[initialPath]
+	initial, ok := process.states[initialPath]
 	if !ok {
 		if state == nil {
 			slog.Warn("[FSM][initial] No initial state found", "path", initialPath)
@@ -284,58 +433,43 @@ func (fsm *FSM) initial(state *state, event Event) *state {
 		slog.Warn("[FSM][initial] No initial transition found", "path", initialPath)
 		return state
 	}
-	return fsm.transition(initial, transition, event)
+	return process.transition(initial, transition, event)
 }
 
-func (fsm *FSM) wait(behavior *behavior) {
-	if fsm == nil {
+func (process *Process) wait(behavior *behavior) {
+	if process == nil {
 		return
 	}
-	active, ok := fsm.active[behavior]
+	active, ok := process.active[behavior]
 	if !ok {
 		return
 	}
 	<-active.channel
 }
 
-func Dispatch[T Dispatchable](fsm fsm, evt T) bool {
-	if fsm == nil {
-		slog.Error("[FSM][Dispatch] FSM is nil")
-		return false
-	}
-	switch any(evt).(type) {
-	case Event:
-		return fsm.Dispatch(any(evt).(Event))
-	case string:
-		return fsm.Dispatch(NewEvent(any(evt).(string), nil))
-	}
-	return false
-}
-
-// true is returned if a transition has been applied, false otherwise.
-func (fsm *FSM) Dispatch(event Event) bool {
-	if fsm == nil {
+func (process *Process) Send(event Event) bool {
+	if process == nil {
 		slog.Error("[FSM][Dispatch] FSM is nil")
 		return false
 	}
 
-	fsm.wait(fsm.behavior)
-	fsm.mutex.Lock()
-	defer fsm.mutex.Unlock()
+	process.wait(process.behavior)
+	process.mutex.Lock()
+	defer process.mutex.Unlock()
 
-	if fsm.current == nil {
+	if process.state == nil {
 		slog.Error("[FSM][Dispatch] Current state is nil")
 		return false
 	}
 
-	states := strings.Split(string(fsm.current.path), "/")
+	states := strings.Split(string(process.state.path), "/")
 	for index := range states {
-		source, ok := fsm.states[Path(path.Join(states[:index+1]...))]
+		source, ok := process.states[Path(path.Join(states[:index+1]...))]
 		if !ok {
 			slog.Error("[FSM][Dispatch] Source state not found", "path", Path(path.Join(states[:index+1]...)))
 			return false
 		}
-		if source.submachine != nil && fsm.submachineState != source && source.submachine.Dispatch(event) {
+		if source.submachine != nil && process.submachineState != source && source.submachine.Send(event) {
 			return true
 		}
 		for _, transition := range source.transitions {
@@ -350,54 +484,292 @@ func (fsm *FSM) Dispatch(event Event) bool {
 			if index == -1 {
 				continue
 			}
-			if !fsm.evaluate(transition.guard, event) {
+			if !process.evaluate(transition.guard, event) {
 				continue
 			}
-			fsm.current = fsm.transition(fsm.current, transition, event)
+			process.state = process.transition(process.state, transition, event)
 			return true
 		}
 	}
 	return false
 }
 
-func (fsm *FSM) Context() *Context {
-	return &fsm.ctx
-}
+/******************** Elements ********************/
 
-func NewModel(elements ...Modelable) *Model {
-	builder := &ModelBuilder{
-		Model: &Model{
-			behavior: &behavior{},
-			states: map[Path]*state{
-				initialName: {
-					kind:        kind.Initial,
-					path:        initialName,
+func Initial[T Targetable](name T, elements ...Element) Element {
+	return func(builder *Builder) {
+		currentPath := Path("")
+		if builder.state != nil {
+			currentPath = builder.state.path
+		}
+		initialPath := Path(path.Join(string(currentPath), ".initial"))
+		initial, ok := builder.model.states[initialPath]
+		if !ok {
+			initial = &state{
+				path:        Path(".initial"),
+				kind:        InitialKind,
+				transitions: []*transition{},
+			}
+			builder.model.states[initialPath] = initial
+		}
+		initialTransition := &transition{
+			events: []Event{},
+			kind:   ExternalKind,
+			source: initialPath,
+		}
+		var target *state
+		switch any(name).(type) {
+		case string, Path:
+			targetPath := Path(path.Join(string(currentPath), string(pathFromName(any(name).(string)))))
+			target, ok = builder.model.states[targetPath]
+			if !ok {
+				target = &state{
+					path:        targetPath,
+					kind:        StateKind,
 					transitions: []*transition{},
-				},
+				}
+				builder.model.states[targetPath] = target
+			}
+			initialTransition.target = targetPath
+
+		case Element:
+			element := any(name).(Element)
+			elements = append(elements, element)
+		}
+		builder.push(target, initialTransition)
+		for _, element := range elements {
+			element(builder)
+		}
+		builder.pop()
+		initial.transitions = append(initial.transitions, initialTransition)
+	}
+}
+
+func State(name string, elements ...Element) Element {
+	statePath := pathFromName(name)
+	return func(builder *Builder) {
+		if builder.state != nil {
+			statePath = Path(path.Join(string(builder.state.path), string(statePath)))
+		}
+		stateElement, ok := builder.model.states[statePath]
+		if !ok {
+			stateElement = &state{
+				path:        statePath,
+				kind:        StateKind,
+				transitions: []*transition{},
+			}
+			builder.model.states[statePath] = stateElement
+		}
+		builder.push(stateElement, nil)
+		for _, element := range elements {
+			element(builder)
+		}
+		builder.pop()
+	}
+}
+
+func Entry(action Action) Element {
+	return func(builder *Builder) {
+		if builder.state == nil {
+			slog.Warn("[fsm][Entry] called outside of a state, Entry can only be used inside of fsm.State(...)")
+			return
+		}
+		builder.state.entry = &behavior{
+			action: action,
+		}
+	}
+}
+
+func Activity(fn Action) Element {
+	return func(builder *Builder) {
+		if builder.state == nil {
+			slog.Warn("[fsm][Activity] called outside of a state, Activity can only be used inside of fsm.State(...)")
+			return
+		}
+		builder.state.activity = &behavior{
+			action: fn,
+		}
+	}
+}
+
+func Exit(action Action) Element {
+	return func(builder *Builder) {
+		if builder.state == nil {
+			slog.Warn("[fsm][Exit] called outside of a state, Exit can only be used inside of fsm.State(...)")
+			return
+		}
+		builder.state.exit = &behavior{
+			action: action,
+		}
+	}
+}
+
+// Src defines the source States for a Transition.
+func Source(sourcePath Path) Element {
+	return func(builder *Builder) {
+		if builder.transition == nil {
+			slog.Warn("[fsm][Source] called outside of a transition, Source can only be used inside of Transition(...)")
+			return
+		}
+		sourcePath = pathFromName(string(sourcePath))
+		if builder.state != nil {
+			sourcePath = Path(path.Join(string(builder.state.path), string(sourcePath)))
+		}
+		source, ok := builder.model.states[sourcePath]
+		if !ok {
+			source = &state{
+				path:        sourcePath,
+				kind:        StateKind,
+				transitions: []*transition{},
+			}
+			builder.model.states[sourcePath] = source
+		}
+		source.transitions = append(source.transitions, builder.transition)
+		builder.transition.source = sourcePath
+	}
+}
+
+// On defines the Event that triggers a Transition.
+func On[E Sendable](events ...E) Element {
+	return func(builder *Builder) {
+		if builder.transition == nil {
+			slog.Warn("[fsm][On] called outside of a transition, On can only be used inside of fsm.Transition(...)")
+			return
+		}
+		for _, evt := range events {
+			switch any(evt).(type) {
+			case string:
+				builder.transition.events = append(builder.transition.events, &event{kind: Kind(any(evt).(string))})
+			case Event:
+				builder.transition.events = append(builder.transition.events, any(evt).(Event))
+			}
+		}
+	}
+}
+
+type Targetable interface {
+	string | Element | Path
+}
+
+// Dst defines the new State the machine switches to after a Transition.
+func Target[T Targetable](target T) Element {
+	return func(builder *Builder) {
+		if builder.transition == nil {
+			slog.Warn("[fsm][Target] called outside of a transition, Target can only be used inside of Transition(...)")
+			return
+		}
+		switch any(target).(type) {
+		case string, Path:
+			targetPath := pathFromName(any(target).(string))
+			if builder.state != nil {
+				targetPath = Path(path.Join(string(builder.state.path), string(targetPath)))
+			}
+			if _, ok := builder.model.states[targetPath]; !ok {
+				slog.Debug("[fsm][Target] creating target state", "path", targetPath)
+				builder.model.states[targetPath] = &state{
+					path:        targetPath,
+					kind:        StateKind,
+					transitions: []*transition{},
+				}
+			}
+			builder.transition.target = targetPath
+		case Element:
+			any(target).(Element)(builder)
+		}
+	}
+}
+
+func Choice(transitions ...Element) Element {
+	return func(builder *Builder) {
+		choicePath := Path("")
+		if builder.state != nil {
+			choicePath = Path(path.Join(string(builder.state.path), string(choicePath)))
+		}
+
+		choice := &state{
+			path:        choicePath,
+			kind:        ChoiceKind,
+			transitions: []*transition{},
+		}
+		builder.push(choice, nil)
+		for _, transition := range transitions {
+			transition(builder)
+		}
+		builder.pop()
+		choice.path = Path(fmt.Sprintf("%s/choice-%d", choice.path, len(builder.model.states)))
+		builder.model.states[choice.path] = choice
+		builder.transition.target = choice.path
+		for _, transition := range choice.transitions {
+			transition.source = choice.path
+		}
+
+	}
+}
+
+func Guard(expr Expression) Element {
+	return func(builder *Builder) {
+		if builder.transition == nil {
+			slog.Warn("[fsm][Guard] called outside of a transition, Guard can only be used inside of Transition(...)")
+			return
+		}
+		builder.transition.guard = &constraint{
+			expr: expr,
+		}
+	}
+}
+
+func Submachine(model *Model) Element {
+	return func(builder *Builder) {
+		if builder.state == nil {
+			slog.Warn("[fsm][Submachine] called outside of a state, Submachine can only be used inside of State(...)")
+			return
+		}
+		submachine := &Model{
+			behavior: &behavior{
+				action: model.behavior.action,
 			},
-		},
+			states:          model.states,
+			submachineState: builder.state,
+		}
+		builder.state.submachine = submachine
 	}
-	for _, buildable := range elements {
-		buildable(builder)
-	}
-	builder.Model.behavior.action = func(ctx Context, event Event) {
-		ctx.mutex.Lock()
-		defer ctx.mutex.Unlock()
-		ctx.current = ctx.initial(nil, event)
-	}
-	return builder.Model
 }
 
-// Reset resets the machine to its initial state.
-func (f *FSM) Reset() {
-	f.current = nil
+func Effect(fn Action) Element {
+	return func(model *Builder) {
+		if model.transition == nil {
+			slog.Warn("[fsm][Effect] called outside of a transition, Effect can only be used inside of Transition(...)")
+			return
+		}
+		model.transition.effect = &behavior{
+			action: fn,
+		}
+	}
 }
 
-// Current returns the current state.
-func (fsm *FSM) State() *state {
-	if fsm == nil {
-		return nil
+func Transition(elements ...Element) Element {
+	return func(builder *Builder) {
+		transition := &transition{}
+		builder.push(builder.state, transition)
+		for _, element := range elements {
+			element(builder)
+		}
+		builder.pop()
+		slog.Debug("[fsm][Transition] transition", "transition", transition)
+		if builder.state != nil && transition.source == "" {
+			transition.source = builder.state.path
+			builder.state.transitions = append(builder.state.transitions, transition)
+		} else if transition.target == "" {
+			slog.Error("[fsm][Transition] target is empty", "transition", transition)
+		}
+		if transition.target == transition.source {
+			transition.kind = SelfKind
+		} else if transition.target == "" {
+			transition.kind = InternalKind
+		} else if match, err := path.Match(string(transition.source)+"/*", string(transition.target)); err == nil && match {
+			transition.kind = LocalKind
+		} else {
+			transition.kind = ExternalKind
+		}
 	}
-	fsm.wait(fsm.behavior)
-	return fsm.current
 }
