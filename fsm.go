@@ -52,6 +52,7 @@ type Event interface {
 	element[event]
 	Kind() Kind
 	Data() any
+	New(data any) Event
 }
 
 type event struct {
