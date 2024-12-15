@@ -399,24 +399,30 @@ func TestNestedTransitions(t *testing.T) {
 }
 
 func TestBroadcast(t *testing.T) {
-	a := fsm.New(
+	model := fsm.New(
 		fsm.Initial("a"),
-		fsm.State("a"),
-	)
-	b := fsm.New(
-		fsm.Initial("b"),
 		fsm.State("b"),
+		fsm.Transition(
+			fsm.On("a"),
+			fsm.Source("a"),
+			fsm.Target("b"),
+		),
 	)
-	c := fsm.New(
-		fsm.Initial("c"),
-		fsm.State("c"),
-	)
-	aFSM := fsm.Execute(context.Background(), a)
-	bFSM := fsm.Execute(aFSM, b)
-	cFSM := fsm.Execute(bFSM, c)
-	aFSM.Send(fsm.NewEvent("a", nil))
-	bFSM.Send(fsm.NewEvent("b", nil))
-	cFSM.Broadcast(fsm.NewEvent("c", nil))
+
+	aFSM := fsm.Execute(context.Background(), model)
+	bFSM := fsm.Execute(aFSM, model)
+	cFSM := fsm.Execute(bFSM, model)
+	cFSM.Broadcast(fsm.NewEvent("a", nil))
+	time.Sleep(1 * time.Millisecond)
+	if aFSM.State().Path() != "b" {
+		t.Fatal("aFSM state is not b", "state", aFSM.State().Path())
+	}
+	if bFSM.State().Path() != "b" {
+		t.Fatal("bFSM state is not b", "state", bFSM.State().Path())
+	}
+	if cFSM.State().Path() != "b" {
+		t.Fatal("cFSM state is not b", "state", cFSM.State().Path())
+	}
 }
 
 func TestSelfTransition(t *testing.T) {

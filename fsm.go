@@ -231,6 +231,9 @@ var activeKey = activeSymbol{}
 var processPool = sync.Pool{
 	New: func() any {
 		return &Process{
+			Model: &Model{
+				behavior: &behavior{},
+			},
 			active: map[*behavior]*active{},
 			mutex:  &sync.Mutex{},
 		}
@@ -239,14 +242,16 @@ var processPool = sync.Pool{
 
 func Execute(ctx context.Context, model *Model) *Process {
 	process := processPool.Get().(*Process)
-	process.Model = model
+	process.Model.states = model.states
+	process.Model.submachineState = model.submachineState
+	process.Model.behavior.action = model.behavior.action
 	if model.submachineState == nil {
 		active, ok := ctx.Value(activeKey).(*sync.Map)
 		if !ok {
 			active = &sync.Map{}
 		}
 		active.Store(process, empty)
-
+		ctx = context.WithValue(ctx, activeKey, active)
 	}
 	process.Context = Context{Context: ctx, Process: process}
 	process.execute(process.Model.behavior, nil)
@@ -280,7 +285,12 @@ func (process *Process) Broadcast(event Event) {
 		return
 	}
 	active.Range(func(value any, _ any) bool {
-		go value.(*Process).Send(event)
+		process, ok := value.(*Process)
+		if !ok {
+			slog.Warn("[fsm][Broadcast] value is not a *Process", "value", value, "process", process)
+			return true
+		}
+		go process.Send(event)
 		return true
 	})
 }
@@ -356,7 +366,6 @@ func (process *Process) execute(element *behavior, event Event) chan struct{} {
 	go func() {
 		element.action(Context{Context: ctx, Process: process}, event)
 		close(current.channel)
-		slog.Debug("[fsm][execute] completion event", "event", CompletionEvent)
 		process.Send(CompletionEvent)
 	}()
 	return current.channel
