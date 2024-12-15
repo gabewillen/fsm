@@ -553,3 +553,22 @@ func TestLocalTransition(t *testing.T) {
 		t.Fatal("fsm state is not a/b", "state", f.State().Path())
 	}
 }
+
+func TestCompletionEvent(t *testing.T) {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+	model := fsm.New(
+		fsm.Initial("a"),
+		fsm.State("a", fsm.Transition(fsm.Target("../b"))),
+		fsm.State("b"),
+	)
+	f := fsm.Execute(context.Background(), model)
+	f.Send(fsm.NewEvent("a", nil))
+	if f.State().Path() == "a" {
+		t.Fatal("fsm state is not b", "state", f.State().Path())
+	}
+
+	// f.Send(fsm.NewEvent("a", nil))
+	// if f.State().Path() != "b" {
+	// 	t.Fatal("fsm state is not b", "state", f.State().Path())
+	// }
+}

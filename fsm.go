@@ -81,6 +81,7 @@ func NewEvent(kind Kind, data any) Event {
 }
 
 var AnyEvent = NewEvent(Kind("*"), nil)
+var CompletionEvent = NewEvent(Kind(""), nil)
 
 /******************** Context ********************/
 
@@ -317,7 +318,7 @@ func (process *Process) exit(state *state, event Event) {
 	}
 	slog.Debug("[state][leave] leave", "state", state.path, "event", event)
 	if state.submachine != nil {
-		process.terminate(state.submachine.behavior)
+		Terminate(&state.submachine.Process)
 	}
 	process.terminate(state.activity)
 	<-process.execute(state.exit, event)
@@ -331,7 +332,8 @@ func (process *Process) enter(state *state, event Event) {
 	<-process.execute(state.entry, event)
 	process.execute(state.activity, event)
 	if state.submachine != nil {
-		Execute(process, state.submachine)
+		state.submachine.Process = Execute(process, state.submachine)
+		state.submachine.Process.wait(state.submachine.behavior)
 	}
 }
 
@@ -353,6 +355,8 @@ func (process *Process) execute(element *behavior, event Event) chan struct{} {
 	go func() {
 		element.action(Context{Context: ctx, Process: process}, event)
 		close(current.channel)
+		slog.Debug("[fsm][execute] completion event", "event", CompletionEvent)
+		process.Send(CompletionEvent)
 	}()
 	return current.channel
 }
@@ -636,6 +640,7 @@ func On[E Sendable](events ...E) Element {
 			slog.Warn("[fsm][On] called outside of a transition, On can only be used inside of fsm.Transition(...)")
 			return
 		}
+		builder.transition.events = []Event{}
 		for _, evt := range events {
 			switch any(evt).(type) {
 			case string:
@@ -749,13 +754,14 @@ func Effect(fn Action) Element {
 
 func Transition(elements ...Element) Element {
 	return func(builder *Builder) {
-		transition := &transition{}
+		transition := &transition{
+			events: []Event{CompletionEvent},
+		}
 		builder.push(builder.state, transition)
 		for _, element := range elements {
 			element(builder)
 		}
 		builder.pop()
-		slog.Debug("[fsm][Transition] transition", "transition", transition)
 		if builder.state != nil && transition.source == "" {
 			transition.source = builder.state.path
 			builder.state.transitions = append(builder.state.transitions, transition)
