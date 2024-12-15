@@ -42,14 +42,14 @@ const (
 
 /******************** Element ********************/
 
-type element interface{}
+type element[T any] interface{}
 
 type Element = func(builder *Builder)
 
 /******************** Events ********************/
 
 type Event interface {
-	element
+	element[event]
 	Kind() Kind
 	Data() any
 }
@@ -61,7 +61,7 @@ type event struct {
 }
 
 type Sendable interface {
-	*event | string
+	element[event] | string
 }
 
 func (e *event) Kind() Kind {
@@ -110,6 +110,7 @@ type behavior struct {
 /******************** States ********************/
 
 type state struct {
+	_           element[state] // tell compiler to ignore unused
 	path        Path
 	kind        Kind
 	entry       *behavior
@@ -653,7 +654,7 @@ func On[E Sendable](events ...E) Element {
 }
 
 type Targetable interface {
-	string | Element | Path
+	string | Element | Path | element[state]
 }
 
 // Dst defines the new State the machine switches to after a Transition.

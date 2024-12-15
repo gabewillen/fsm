@@ -10,6 +10,8 @@ import (
 	"github.com/gabewillen/fsm"
 )
 
+var FooEvent = fsm.NewEvent("foo", nil)
+
 func TestFSM(t *testing.T) {
 	// slog.SetLogLoggerLevel(slog.LevelDebug)
 
@@ -22,7 +24,7 @@ func TestFSM(t *testing.T) {
 			"bar",
 		),
 		fsm.Transition(
-			fsm.On("foo"),
+			fsm.On(FooEvent),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
 		),
