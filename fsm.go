@@ -81,7 +81,6 @@ func NewEvent(kind Kind, data any) Event {
 }
 
 var AnyEvent = NewEvent(Kind("*"), nil)
-var CompletionEvent = NewEvent(Kind(""), nil)
 
 /******************** Context ********************/
 
@@ -131,7 +130,7 @@ func (state *state) Submachine() *Model {
 /******************** Transitions ********************/
 
 type transition struct {
-	events []Event
+	events []Kind
 	kind   Kind
 	guard  *constraint
 	effect *behavior
@@ -211,9 +210,22 @@ func (builder *Builder) pop() *Builder {
 /******************** Process ********************/
 
 type active struct {
+	context.Context
 	channel chan struct{}
 	cancel  context.CancelFunc
 }
+
+var inactive = func() *active {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	channel := make(chan struct{})
+	close(channel)
+	return &active{
+		Context: ctx,
+		channel: channel,
+		cancel:  cancel,
+	}
+}()
 
 type Process struct {
 	*Model
@@ -254,7 +266,7 @@ func Execute(ctx context.Context, model *Model) *Process {
 		ctx = context.WithValue(ctx, activeKey, active)
 	}
 	process.Context = Context{Context: ctx, Process: process}
-	process.execute(process.Model.behavior, nil)
+	process.execute(process.Model.behavior, nil, false)
 	return process
 }
 
@@ -332,28 +344,47 @@ func (process *Process) exit(state *state, event Event) {
 		Terminate(&state.submachine.Process)
 	}
 	process.terminate(state.activity)
-	<-process.execute(state.exit, event)
+	process.execute(state.exit, event, true)
 }
 
 func (process *Process) enter(state *state, event Event) {
 	slog.Debug("[state][enter] enter", "state", state, "event", event)
-	if state == nil {
+	if state == nil || process == nil || state.kind != StateKind {
 		return
 	}
-	<-process.execute(state.entry, event)
-	process.execute(state.activity, event)
+	process.execute(state.entry, event, true)
+	process.execute(state.activity, event, false)
+	// context.AfterFunc(process.execute(state.activity, event, false), func() {
+	// 	if process.state == nil || !strings.HasPrefix(string(process.state.path), string(state.path)) {
+	// 		return
+	// 	}
+	// 	substates := strings.Split(string(state.path), "/")
+	// 	// TODO: code duplication here
+	// 	for index := range substates {
+	// 		path := Path(path.Join(substates[:len(substates)-index]...))
+	// 		state, ok := process.states[path]
+	// 		if !ok {
+	// 			slog.Warn("[fsm][execute] state not found", "path", path)
+	// 			continue
+	// 		}
+	// 		select {
+	// 		case <-process.Done():
+	// 			return
+	// 		default:
+	// 			process.wait(state.activity)
+	// 		}
+	// 	}
+	// 	// process.Send()
+	// })
 	if state.submachine != nil {
 		state.submachine.Process = Execute(process, state.submachine)
 		state.submachine.Process.wait(state.submachine.behavior)
 	}
 }
 
-func (process *Process) execute(element *behavior, event Event) chan struct{} {
-
-	channel := make(chan struct{})
+func (process *Process) execute(element *behavior, event Event, wait bool) *active {
 	if process == nil || element == nil || element.action == nil {
-		close(channel)
-		return channel
+		return inactive
 	}
 	current, ok := process.active[element]
 	if current == nil || !ok {
@@ -362,25 +393,15 @@ func (process *Process) execute(element *behavior, event Event) chan struct{} {
 	}
 	var ctx context.Context
 	ctx, current.cancel = context.WithCancel(process)
-	current.channel = channel
+	current.channel = make(chan struct{})
 	go func() {
 		element.action(Context{Context: ctx, Process: process}, event)
 		close(current.channel)
-		substates := strings.Split(string(process.state.path), "/")
-		// TODO: code duplication here
-		for index := range substates {
-			path := Path(path.Join(substates[:len(substates)-index]...))
-			state, ok := process.states[path]
-			if !ok {
-				slog.Warn("[fsm][execute] state not found", "path", path)
-				continue
-			}
-			process.wait(state.activity)
-		}
-		process.Send(CompletionEvent)
-
 	}()
-	return current.channel
+	if wait {
+		<-current.channel
+	}
+	return current
 }
 
 func (process *Process) transition(current *state, transition *transition, event Event) *state {
@@ -393,7 +414,7 @@ func (process *Process) transition(current *state, transition *transition, event
 	for transition != nil {
 		switch transition.kind {
 		case InternalKind:
-			<-process.execute(transition.effect, event)
+			process.execute(transition.effect, event, true)
 			return current
 		case SelfKind, ExternalKind:
 			exit := strings.Split(string(current.path), "/")
@@ -404,7 +425,7 @@ func (process *Process) transition(current *state, transition *transition, event
 				}
 			}
 		}
-		<-process.execute(transition.effect, event)
+		process.execute(transition.effect, event, true)
 		var enter []string
 		if transition.kind == SelfKind {
 			enter = []string{string(transition.target)}
@@ -499,8 +520,8 @@ func (process *Process) Send(event Event) bool {
 			return true
 		}
 		for _, transition := range source.transitions {
-			index := slices.IndexFunc(transition.events, func(evt Event) bool {
-				match, err := path.Match(string(evt.Kind()), string(event.Kind()))
+			index := slices.IndexFunc(transition.events, func(evt Kind) bool {
+				match, err := path.Match(string(evt), string(event.Kind()))
 				if err != nil {
 					slog.Warn("Error matching event", "error", err)
 					return false
@@ -539,7 +560,7 @@ func Initial[T Targetable](name T, elements ...Element) Element {
 			builder.model.states[initialPath] = initial
 		}
 		initialTransition := &transition{
-			events: []Event{},
+			events: []Kind{},
 			kind:   ExternalKind,
 			source: initialPath,
 		}
@@ -662,13 +683,13 @@ func On[E Sendable](events ...E) Element {
 			slog.Warn("[fsm][On] called outside of a transition, On can only be used inside of fsm.Transition(...)")
 			return
 		}
-		builder.transition.events = []Event{}
+		builder.transition.events = []Kind{}
 		for _, evt := range events {
 			switch any(evt).(type) {
 			case string:
-				builder.transition.events = append(builder.transition.events, &event{kind: Kind(any(evt).(string))})
+				builder.transition.events = append(builder.transition.events, Kind(any(evt).(string)))
 			case Event:
-				builder.transition.events = append(builder.transition.events, any(evt).(Event))
+				builder.transition.events = append(builder.transition.events, any(evt).(Event).Kind())
 			}
 		}
 	}
@@ -777,7 +798,7 @@ func Effect(fn Action) Element {
 func Transition(elements ...Element) Element {
 	return func(builder *Builder) {
 		transition := &transition{
-			events: []Event{CompletionEvent},
+			events: []Kind{},
 		}
 		builder.push(builder.state, transition)
 		for _, element := range elements {
@@ -789,6 +810,13 @@ func Transition(elements ...Element) Element {
 			builder.state.transitions = append(builder.state.transitions, transition)
 		} else if transition.target == "" {
 			slog.Error("[fsm][Transition] target is empty", "transition", transition)
+		}
+		if len(transition.events) == 0 {
+			// this is a completion transition
+			kind := transition.source + ".completion"
+			slog.Info("[fsm][Transition] completion transition", "event", kind)
+			transition.events = append(transition.events, Kind(kind))
+
 		}
 		if transition.target == transition.source {
 			transition.kind = SelfKind

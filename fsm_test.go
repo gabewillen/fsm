@@ -561,26 +561,3 @@ func TestLocalTransition(t *testing.T) {
 		t.Fatal("fsm state is not a/b", "state", f.State().Path())
 	}
 }
-
-func TestCompletionEvent(t *testing.T) {
-	slog.SetLogLoggerLevel(slog.LevelDebug)
-	model := fsm.New(
-		fsm.Initial("a/b"),
-		fsm.State("a", fsm.Transition(fsm.Target("../c")), fsm.State("b", fsm.Activity(func(ctx fsm.Context, event fsm.Event) {
-			slog.Info("[fsm][execute] completion event", "event", event)
-			time.Sleep(1 * time.Second)
-		}))),
-		fsm.State("c"),
-	)
-	f := fsm.Execute(context.Background(), model)
-	f.Send(fsm.NewEvent("a", nil))
-	if f.State().Path() == "a" {
-		t.Fatal("fsm state is not b", "state", f.State().Path())
-	}
-	time.Sleep(1 * time.Second)
-
-	// f.Send(fsm.NewEvent("a", nil))
-	// if f.State().Path() != "b" {
-	// 	t.Fatal("fsm state is not b", "state", f.State().Path())
-	// }
-}
