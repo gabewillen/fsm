@@ -366,7 +366,19 @@ func (process *Process) execute(element *behavior, event Event) chan struct{} {
 	go func() {
 		element.action(Context{Context: ctx, Process: process}, event)
 		close(current.channel)
+		substates := strings.Split(string(process.state.path), "/")
+		// TODO: code duplication here
+		for index := range substates {
+			path := Path(path.Join(substates[:len(substates)-index]...))
+			state, ok := process.states[path]
+			if !ok {
+				slog.Warn("[fsm][execute] state not found", "path", path)
+				continue
+			}
+			process.wait(state.activity)
+		}
 		process.Send(CompletionEvent)
+
 	}()
 	return current.channel
 }
