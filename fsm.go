@@ -252,10 +252,10 @@ var inactive = func() *active {
 type FSM struct {
 	*model
 	context.Context
-	state  *state
-	active map[*behavior]*active
-	mutex  *sync.Mutex
-	Ref    any
+	state   *state
+	active  map[*behavior]*active
+	mutex   *sync.Mutex
+	Storage any
 }
 
 var empty = struct{}{}
@@ -277,7 +277,7 @@ var fsmPool = sync.Pool{
 	},
 }
 
-func New(ctx context.Context, model *model) *FSM {
+func WithStorage(ctx context.Context, model *model, storage any) *FSM {
 	fsm := fsmPool.Get().(*FSM)
 	fsm.states = model.states
 	fsm.submachineState = model.submachineState
@@ -288,9 +288,13 @@ func New(ctx context.Context, model *model) *FSM {
 	}
 	active.Store(fsm, empty)
 	fsm.Context = context.WithValue(ctx, activeKey, active)
-	fsm.Ref = ctx
+	fsm.Storage = storage
 	fsm.execute(fsm.behavior, nil, false)
 	return fsm
+}
+
+func New(ctx context.Context, model *model) *FSM {
+	return WithStorage(ctx, model, nil)
 }
 
 func Delete(fsm **FSM) {

@@ -145,16 +145,14 @@ func TestEffect(t *testing.T) {
 
 func fooEntry(ctx fsm.Context, event fsm.Event) {
 	slog.Debug("fooEntry", "event", event)
-	if foo, ok := any(ctx.Ref).(*Foo); ok {
+	if foo, ok := any(ctx.Storage).(*FooStorage); ok {
 		foo.bar++
 		return
 	}
 	slog.Error("fooEntry", "error", "foo is not a *Foo")
 }
 
-type Foo struct {
-	*fsm.FSM
-	context.Context
+type FooStorage struct {
 	bar int
 }
 
@@ -165,11 +163,8 @@ var FooModel = fsm.Model(
 
 func TestCast(t *testing.T) {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
-	foo := &Foo{
-		Context: context.Background(),
-	}
-	foo.FSM = fsm.New(foo, FooModel)
-	_, ok := foo.Ref.(*Foo)
+	foo := fsm.WithStorage(context.Background(), FooModel, &FooStorage{})
+	_, ok := foo.Storage.(*FooStorage)
 	if !ok {
 		t.Fatal("foo.Ref is not a *Foo")
 	}
