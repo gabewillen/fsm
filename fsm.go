@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 /******************** Path ********************/
@@ -42,7 +44,8 @@ const (
 
 /******************** Element ********************/
 
-type element[T any] interface{}
+type element[T any] interface {
+}
 
 type Element = func(builder *Builder)
 
@@ -50,15 +53,17 @@ type Element = func(builder *Builder)
 
 type Event interface {
 	element[event]
+	Id() string
 	Kind() Kind
 	Data() any
-	New(data any) Event
+	WithData(data any) Event
 }
 
 type event struct {
 	Event
 	kind Kind
 	data any
+	id   uuid.UUID
 }
 
 type Sendable interface {
@@ -73,21 +78,41 @@ func (e *event) Data() any {
 	return e.data
 }
 
-func (e *event) New(data any) Event {
-	return &event{kind: e.kind, data: data}
+func (e *event) Id() string {
+	if e.id == uuid.Nil {
+		return ""
+	}
+	return e.id.String()
+}
+
+func (e *event) WithData(data any) Event {
+	uuid, err := uuid.NewV7()
+	if err != nil {
+		slog.Error("[fsm][event][WithData] failed to create new event", "error", err)
+	}
+	return &event{kind: e.kind, data: data, id: uuid}
 }
 
 func NewEvent(kind Kind, data any) Event {
 	return &event{kind: kind, data: data}
 }
 
-var AnyEvent = NewEvent(Kind("*"), nil)
+func EventKind(kind Kind) Event {
+	return NewEvent(kind, nil)
+}
+
+var AnyEvent = EventKind("*")
+
+/******************** Ref ********************/
+
+type Ref = any
 
 /******************** Context ********************/
 
 type Context struct {
 	context.Context
-	*Process
+	*process
+	Ref Ref
 }
 
 /******************** Constraints ********************/
@@ -103,7 +128,7 @@ type constraint struct {
 type Action func(Context, Event)
 
 type behavior struct {
-	Context
+	*process
 	action Action
 }
 
@@ -117,15 +142,10 @@ type state struct {
 	activity    *behavior
 	exit        *behavior
 	transitions []*transition
-	submachine  *Model
 }
 
 func (state *state) Path() Path {
 	return state.path
-}
-
-func (state *state) Submachine() *Model {
-	return state.submachine
 }
 
 /******************** Transitions ********************/
@@ -141,10 +161,14 @@ type transition struct {
 
 /******************** Model ********************/
 
+// type Model interface {
+// }
+
 type Model struct {
 	*behavior
 	states          map[Path]*state
 	submachineState *state
+	storage         any
 }
 
 // New creates a new finite state machine having the specified initial state.
@@ -211,26 +235,27 @@ func (builder *Builder) pop() *Builder {
 /******************** Process ********************/
 
 type active struct {
-	context.Context
+	// context.Context
 	channel chan struct{}
 	cancel  context.CancelFunc
 }
 
 var inactive = func() *active {
-	ctx, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancel(context.Background())
 	cancel()
 	channel := make(chan struct{})
 	close(channel)
 	return &active{
-		Context: ctx,
 		channel: channel,
 		cancel:  cancel,
 	}
 }()
 
-type Process struct {
-	*Model
+type process struct {
+	context.Context
+	model  *Model
 	state  *state
+	ref    any
 	active map[*behavior]*active
 	mutex  *sync.Mutex
 }
@@ -243,9 +268,10 @@ var activeKey = activeSymbol{}
 
 var processPool = sync.Pool{
 	New: func() any {
-		return &Process{
-			Model: &Model{
+		return &process{
+			model: &Model{
 				behavior: &behavior{},
+				storage:  nil,
 			},
 			active: map[*behavior]*active{},
 			mutex:  &sync.Mutex{},
@@ -253,11 +279,12 @@ var processPool = sync.Pool{
 	},
 }
 
-func Execute(ctx context.Context, model *Model) *Process {
-	process := processPool.Get().(*Process)
-	process.Model.states = model.states
-	process.Model.submachineState = model.submachineState
-	process.Model.behavior.action = model.behavior.action
+func Execute(ctx context.Context, model *Model) Context {
+	process := processPool.Get().(*process)
+	process.model.states = model.states
+	process.model.submachineState = model.submachineState
+	process.model.behavior.action = model.behavior.action
+	process.ref = ctx
 	if model.submachineState == nil {
 		active, ok := ctx.Value(activeKey).(*sync.Map)
 		if !ok {
@@ -266,18 +293,22 @@ func Execute(ctx context.Context, model *Model) *Process {
 		active.Store(process, empty)
 		ctx = context.WithValue(ctx, activeKey, active)
 	}
-	process.Context = Context{Context: ctx, Process: process}
-	process.execute(process.Model.behavior, nil, false)
-	return process
+	process.Context = ctx
+	process.execute(process.model.behavior, nil, false)
+	return Context{
+		Context: ctx,
+		process: process,
+		Ref:     process.ref,
+	}
 }
 
-func Terminate(process **Process) {
-	(*process).terminate((*process).behavior)
-	processPool.Put(*process)
-	*process = nil
+func Terminate(ctx *Context) {
+	ctx.process.terminate(ctx.process.model.behavior)
+	processPool.Put(ctx.process)
+	ctx.process = nil
 }
 
-func Send[T Sendable](process *Process, event T) bool {
+func Send[T Sendable](process *process, event T) bool {
 	if process == nil {
 		slog.Error("[FSM][Dispatch] FSM is nil")
 		return false
@@ -291,14 +322,14 @@ func Send[T Sendable](process *Process, event T) bool {
 	return false
 }
 
-func (process *Process) Broadcast(event Event) {
-	active, ok := process.Value(activeKey).(*sync.Map)
+func (proc *process) Broadcast(event Event) {
+	active, ok := proc.Value(activeKey).(*sync.Map)
 	if !ok {
 		slog.Warn("[fsm][Broadcast] no machines found in context")
 		return
 	}
 	active.Range(func(value any, _ any) bool {
-		process, ok := value.(*Process)
+		process, ok := value.(*process)
 		if !ok {
 			slog.Warn("[fsm][Broadcast] value is not a *Process", "value", value, "process", process)
 			return true
@@ -308,23 +339,25 @@ func (process *Process) Broadcast(event Event) {
 	})
 }
 
-// Current returns the current state.
-func (process *Process) State() *state {
+func (process *process) State() Path {
 	if process == nil {
-		return nil
+		return ""
 	}
-	process.wait(process.behavior)
-	return process.state
+	process.wait(process.model.behavior)
+	if process.state == nil {
+		return ""
+	}
+	return process.state.path
 }
 
-func (process *Process) evaluate(element *constraint, event Event) bool {
+func (process *process) evaluate(element *constraint, event Event) bool {
 	if element == nil {
 		return true
 	}
-	return element.expr(Context{Context: process, Process: process}, event)
+	return element.expr(Context{Context: process, Ref: process.ref}, event)
 }
 
-func (process *Process) terminate(element *behavior) {
+func (process *process) terminate(element *behavior) {
 	if element == nil {
 		return
 	}
@@ -336,19 +369,20 @@ func (process *Process) terminate(element *behavior) {
 	<-active.channel
 }
 
-func (process *Process) exit(state *state, event Event) {
+func (process *process) exit(state *state, event Event) {
 	if state == nil {
 		return
 	}
 	slog.Debug("[state][leave] leave", "state", state.path, "event", event)
-	if state.submachine != nil {
-		Terminate(&state.submachine.Process)
-	}
 	process.terminate(state.activity)
 	process.execute(state.exit, event, true)
 }
 
-func (process *Process) enter(state *state, event Event) {
+func (process *process) Ref() any {
+	return process.ref
+}
+
+func (process *process) enter(state *state, event Event) {
 	slog.Debug("[state][enter] enter", "state", state, "event", event)
 	if state == nil || process == nil || state.kind != StateKind {
 		return
@@ -377,13 +411,10 @@ func (process *Process) enter(state *state, event Event) {
 	// 	}
 	// 	// process.Send()
 	// })
-	if state.submachine != nil {
-		state.submachine.Process = Execute(process, state.submachine)
-		state.submachine.Process.wait(state.submachine.behavior)
-	}
+
 }
 
-func (process *Process) execute(element *behavior, event Event, wait bool) *active {
+func (process *process) execute(element *behavior, event Event, wait bool) *active {
 	if process == nil || element == nil || element.action == nil {
 		return inactive
 	}
@@ -396,7 +427,7 @@ func (process *Process) execute(element *behavior, event Event, wait bool) *acti
 	ctx, current.cancel = context.WithCancel(process)
 	current.channel = make(chan struct{})
 	go func() {
-		element.action(Context{Context: ctx, Process: process}, event)
+		element.action(Context{Context: ctx, process: process, Ref: process.ref}, event)
 		close(current.channel)
 	}()
 	if wait {
@@ -405,7 +436,7 @@ func (process *Process) execute(element *behavior, event Event, wait bool) *acti
 	return current
 }
 
-func (process *Process) transition(current *state, transition *transition, event Event) *state {
+func (process *process) transition(current *state, transition *transition, event Event) *state {
 	slog.Debug("[fsm][transition] transition", "transition", transition, "current", current, "event", event)
 	var ok bool
 	var target *state
@@ -420,7 +451,7 @@ func (process *Process) transition(current *state, transition *transition, event
 		case SelfKind, ExternalKind:
 			exit := strings.Split(string(current.path), "/")
 			for index := range exit {
-				current, ok = process.states[Path(path.Join(exit[:len(exit)-index]...))]
+				current, ok = process.model.states[Path(path.Join(exit[:len(exit)-index]...))]
 				if ok {
 					process.exit(current, event)
 				}
@@ -434,12 +465,12 @@ func (process *Process) transition(current *state, transition *transition, event
 			enter = strings.Split(strings.TrimPrefix(string(transition.target), string(transition.source)), "/")
 		}
 		for index := range enter {
-			current, ok = process.states[Path(path.Join(enter[:index+1]...))]
+			current, ok = process.model.states[Path(path.Join(enter[:index+1]...))]
 			if ok {
 				process.enter(current, event)
 			}
 		}
-		if target, ok = process.states[transition.target]; ok && target != nil {
+		if target, ok = process.model.states[transition.target]; ok && target != nil {
 			if target.kind == ChoiceKind {
 				current = target
 				for _, choice := range target.transitions {
@@ -460,7 +491,7 @@ func (process *Process) transition(current *state, transition *transition, event
 	return nil
 }
 
-func (process *Process) initial(state *state, event Event) *state {
+func (process *process) initial(state *state, event Event) *state {
 	if process == nil {
 		slog.Error("[FSM][initial] FSM is nil")
 		return nil
@@ -469,7 +500,7 @@ func (process *Process) initial(state *state, event Event) *state {
 	if state != nil {
 		initialPath = Path(path.Join(string(state.path), string(initialPath)))
 	}
-	initial, ok := process.states[initialPath]
+	initial, ok := process.model.states[initialPath]
 	if !ok {
 		if state == nil {
 			slog.Warn("[FSM][initial] No initial state found", "path", initialPath)
@@ -484,7 +515,7 @@ func (process *Process) initial(state *state, event Event) *state {
 	return process.transition(initial, transition, event)
 }
 
-func (process *Process) wait(behavior *behavior) {
+func (process *process) wait(behavior *behavior) {
 	if process == nil {
 		return
 	}
@@ -495,13 +526,13 @@ func (process *Process) wait(behavior *behavior) {
 	<-active.channel
 }
 
-func (process *Process) Send(event Event) bool {
+func (process *process) Send(event Event) bool {
 	if process == nil {
 		slog.Error("[FSM][Dispatch] FSM is nil")
 		return false
 	}
 
-	process.wait(process.behavior)
+	process.wait(process.model.behavior)
 	process.mutex.Lock()
 	defer process.mutex.Unlock()
 
@@ -512,13 +543,10 @@ func (process *Process) Send(event Event) bool {
 
 	states := strings.Split(string(process.state.path), "/")
 	for index := range states {
-		source, ok := process.states[Path(path.Join(states[:index+1]...))]
+		source, ok := process.model.states[Path(path.Join(states[:index+1]...))]
 		if !ok {
 			slog.Error("[FSM][Dispatch] Source state not found", "path", Path(path.Join(states[:index+1]...)))
 			return false
-		}
-		if source.submachine != nil && process.submachineState != source && source.submachine.Send(event) {
-			return true
 		}
 		for _, transition := range source.transitions {
 			index := slices.IndexFunc(transition.events, func(evt Kind) bool {
@@ -764,23 +792,6 @@ func Guard(expr Expression) Element {
 		builder.transition.guard = &constraint{
 			expr: expr,
 		}
-	}
-}
-
-func Submachine(model *Model) Element {
-	return func(builder *Builder) {
-		if builder.state == nil {
-			slog.Warn("[fsm][Submachine] called outside of a state, Submachine can only be used inside of State(...)")
-			return
-		}
-		submachine := &Model{
-			behavior: &behavior{
-				action: model.behavior.action,
-			},
-			states:          model.states,
-			submachineState: builder.state,
-		}
-		builder.state.submachine = submachine
 	}
 }
 

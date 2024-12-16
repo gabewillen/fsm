@@ -10,7 +10,7 @@ import (
 	"github.com/gabewillen/fsm"
 )
 
-var FooEvent = fsm.NewEvent("foo", nil)
+var FooEvent = fsm.EventKind("foo")
 
 func TestFSM(t *testing.T) {
 	// slog.SetLogLoggerLevel(slog.LevelDebug)
@@ -30,19 +30,19 @@ func TestFSM(t *testing.T) {
 		),
 	)
 	f := fsm.Execute(context.Background(), model)
-	if f.State().Path() != "foo" {
+	if f.State() != "foo" {
 		t.Error("Initial state is not foo", "state", f.State())
 		return
 	}
-	ok := f.Send(fsm.NewEvent("foo", nil))
+	ok := f.Send(fsm.EventKind("foo"))
 	if !ok {
 		t.Error("Event returned false")
 	}
-	if f.State().Path() != "bar" {
+	if f.State() != "bar" {
 		t.Error("Bad target state")
 	}
 	fsm.Terminate(&f)
-	if f != nil {
+	if f.State() != "" {
 		t.Fatal("Bad state after terminate", f)
 	}
 }
@@ -67,12 +67,12 @@ func TestGuard(t *testing.T) {
 	)
 	f := fsm.Execute(context.Background(), model)
 	ok := f.Send(fsm.NewEvent("foo", nil))
-	if ok || f.State().Path() == "bar" {
-		t.Error("Transition should not happen because of Check")
+	if ok || f.State() != "foo" {
+		t.Error("Transition should not happen because of Check", "state", f.State())
 	}
 	check = true
 	ok = f.Send(fsm.NewEvent("foo", nil))
-	if !ok || f.State().Path() != "bar" {
+	if !ok || f.State() != "bar" {
 		t.Error("Transition should happen thanks to Check")
 	}
 }
@@ -107,13 +107,13 @@ func TestChoice(t *testing.T) {
 	f := fsm.Execute(context.Background(), model)
 	slog.Info("f", "f", f)
 	ok := f.Send(fsm.NewEvent("foo", nil))
-	if !ok || f.State().Path() != "baz" {
-		t.Error("Should transition to baz when check is false", "state", f.State().Path())
+	if !ok || f.State() != "baz" {
+		t.Error("Should transition to baz when check is false", "state", f.State())
 	}
 	check = true
 	f = fsm.Execute(context.Background(), model)
 	ok = f.Send(fsm.NewEvent("foo", nil))
-	if !ok || f.State().Path() != "bar" {
+	if !ok || f.State() != "bar" {
 		t.Error("Should transition to bar when check is true")
 	}
 }
@@ -140,6 +140,38 @@ func TestEffect(t *testing.T) {
 	}
 	if !call {
 		t.Error("Call should have been called")
+	}
+}
+
+func fooEntry(ctx fsm.Context, event fsm.Event) {
+	slog.Debug("fooEntry", "event", event)
+	if foo, ok := ctx.Ref.(*Foo); ok {
+		foo.bar++
+	}
+}
+
+type Foo struct {
+	context.Context
+	bar int
+}
+
+var FooModel = fsm.New(
+	fsm.Initial("foo"),
+	fsm.State("foo", fsm.Entry(fooEntry)),
+)
+
+func TestCast(t *testing.T) {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+	foo := &Foo{
+		Context: context.Background(),
+	}
+	f := fsm.Execute(foo, FooModel)
+	_, ok := f.Ref.(*Foo)
+	if !ok {
+		t.Fatal("f.Context is not foo")
+	}
+	if f.State() == "" {
+		t.Fatal("f is nil")
 	}
 }
 
@@ -223,61 +255,6 @@ func TestActivityTermination(t *testing.T) {
 	}
 }
 
-func TestSubmachine(t *testing.T) {
-	a := fsm.New(
-		fsm.Initial("foo"),
-		fsm.State(
-			"foo",
-		),
-		fsm.State(
-			"bar",
-		),
-		fsm.Transition(
-			fsm.On("foo"),
-			fsm.Source("foo"),
-			fsm.Target("bar"),
-		),
-	)
-	model := fsm.New(
-		fsm.Initial("a"),
-		fsm.State("a", fsm.Submachine(a)),
-		fsm.State("b"),
-		fsm.Transition(
-			fsm.On("a"),
-			fsm.Source("a"),
-			fsm.Target("b"),
-		),
-	)
-
-	slog.Info("Model", "model", model)
-	f := fsm.Execute(context.Background(), model)
-	submachine := f.State().Submachine()
-	if submachine == nil {
-		t.Error("Submachine is nil")
-		return
-	}
-	slog.Info("Submachine", "submachine", submachine)
-
-	if submachine.State().Path() != "foo" {
-		slog.Error("bad submachine state", "state", submachine.State())
-		t.Error("bad submachine state", submachine.State().Path(), "expected", "foo")
-		return
-	}
-
-	f.Send(fsm.NewEvent("foo", nil))
-	t.Log("submachine", f.State().Submachine().State().Path())
-	if f.State().Submachine().State().Path() != "bar" {
-		t.Error("Bad state")
-		return
-	}
-	f.Send(fsm.NewEvent("a", nil))
-	if f.State().Path() != "b" {
-		t.Error("failed to transition from a to b")
-		return
-	}
-
-}
-
 func TestNestedStates(t *testing.T) {
 	actions := []string{}
 	testState := func(name string, states ...fsm.Element) fsm.Element {
@@ -300,7 +277,7 @@ func TestNestedStates(t *testing.T) {
 		),
 	)
 	f := fsm.Execute(context.Background(), model)
-	if f.State().Path() != "a/b/c" {
+	if f.State() != "a/b/c" {
 		t.Error("fsm state is not initial state a/b/c")
 		return
 	}
@@ -322,7 +299,7 @@ func TestNestedStates(t *testing.T) {
 	if !ok {
 		t.Error("a not called")
 	}
-	if f.State().Path() != "bar" {
+	if f.State() != "bar" {
 		t.Error("fsm state is not bar")
 	}
 	if len(actions) != 4 {
@@ -350,8 +327,8 @@ func TestNestedInitial(t *testing.T) {
 		fsm.State("a", fsm.Initial("b"), fsm.State("b")),
 	)
 	f := fsm.Execute(context.Background(), model)
-	if f.State().Path() != "a/b" {
-		t.Error("fsm state is not initial state a/b", "state", f.State().Path())
+	if f.State() != "a/b" {
+		t.Error("fsm state is not initial state a/b", "state", f.State())
 		return
 	}
 }
@@ -382,16 +359,16 @@ func TestNestedTransitions(t *testing.T) {
 		),
 	)
 	f := fsm.Execute(context.Background(), model)
-	if f.State().Path() != "a/b" {
-		t.Fatal("fsm state is not initial state a/b", "state", f.State().Path())
+	if f.State() != "a/b" {
+		t.Fatal("fsm state is not initial state a/b", "state", f.State())
 	}
 	f.Send(fsm.NewEvent("a", nil))
-	if f.State().Path() != "a/c" {
-		t.Fatal("fsm state is not a/c", "state", f.State().Path())
+	if f.State() != "a/c" {
+		t.Fatal("fsm state is not a/c", "state", f.State())
 	}
 	f.Send(fsm.NewEvent("b", nil))
-	if f.State().Path() != "b/c" {
-		t.Fatal("fsm state is not b", "state", f.State().Path())
+	if f.State() != "b/c" {
+		t.Fatal("fsm state is not b", "state", f.State())
 	}
 	if entryCalls != 1 {
 		t.Fatal("entryCalls not called", "entryCalls", entryCalls)
@@ -414,14 +391,14 @@ func TestBroadcast(t *testing.T) {
 	cFSM := fsm.Execute(bFSM, model)
 	cFSM.Broadcast(fsm.NewEvent("a", nil))
 	time.Sleep(1 * time.Millisecond)
-	if aFSM.State().Path() != "b" {
-		t.Fatal("aFSM state is not b", "state", aFSM.State().Path())
+	if aFSM.State() != "b" {
+		t.Fatal("aFSM state is not b", "state", aFSM.State())
 	}
-	if bFSM.State().Path() != "b" {
-		t.Fatal("bFSM state is not b", "state", bFSM.State().Path())
+	if bFSM.State() != "b" {
+		t.Fatal("bFSM state is not b", "state", bFSM.State())
 	}
-	if cFSM.State().Path() != "b" {
-		t.Fatal("cFSM state is not b", "state", cFSM.State().Path())
+	if cFSM.State() != "b" {
+		t.Fatal("cFSM state is not b", "state", cFSM.State())
 	}
 }
 
@@ -476,8 +453,8 @@ func TestInitialWithChoice(t *testing.T) {
 		fsm.State("c"),
 	)
 	f := fsm.Execute(context.Background(), model)
-	if f.State().Path() != "b" {
-		t.Fatal("fsm state is not b", "state", f.State().Path())
+	if f.State() != "b" {
+		t.Fatal("fsm state is not b", "state", f.State())
 	}
 }
 
@@ -529,16 +506,16 @@ func TestTransitionFromNestedEntry(t *testing.T) {
 		),
 	)
 	f := fsm.Execute(context.Background(), model)
-	if f.State().Path() != "a/b" {
-		t.Fatal("fsm state is not initial state a/b", "state", f.State().Path())
+	if f.State() != "a/b" {
+		t.Fatal("fsm state is not initial state a/b", "state", f.State())
 	}
 	f.Send(fsm.NewEvent("a", nil))
-	if f.State().Path() != "a/c" {
-		t.Fatal("fsm state is not a/c", "state", f.State().Path())
+	if f.State() != "a/c" {
+		t.Fatal("fsm state is not a/c", "state", f.State())
 	}
 	f.Send(fsm.NewEvent("b", nil))
-	if f.State().Path() != "b/c" {
-		t.Fatal("fsm state is not b", "state", f.State().Path())
+	if f.State() != "b/c" {
+		t.Fatal("fsm state is not b", "state", f.State())
 	}
 	if entryCalls != 1 {
 		t.Fatal("entryCalls not called", "entryCalls", entryCalls)
@@ -557,7 +534,7 @@ func TestLocalTransition(t *testing.T) {
 	)
 	f := fsm.Execute(context.Background(), model)
 	f.Send(fsm.NewEvent("a", nil))
-	if f.State().Path() != "a/b" {
-		t.Fatal("fsm state is not a/b", "state", f.State().Path())
+	if f.State() != "a/b" {
+		t.Fatal("fsm state is not a/b", "state", f.State())
 	}
 }
