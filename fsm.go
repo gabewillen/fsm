@@ -49,20 +49,22 @@ type element[T any] interface {
 
 type Element = func(builder *Builder)
 
+type Data = any
+
 /******************** Events ********************/
 
 type Event interface {
 	element[event]
 	Id() string
 	Kind() Kind
-	Data() any
+	Data() Data
 	WithData(data any) Event
 }
 
 type event struct {
 	Event
 	kind Kind
-	data any
+	data Data
 	id   uuid.UUID
 }
 
@@ -109,14 +111,15 @@ type Ref = any
 
 /******************** Instance ********************/
 
-type FSM struct {
+type Context struct {
 	context.Context
+	Ref Ref
 	*process
 }
 
 /******************** Constraints ********************/
 
-type Expression func(FSM, Event) bool
+type Expression func(Context, Event) bool
 
 type constraint struct {
 	expr Expression
@@ -124,10 +127,9 @@ type constraint struct {
 
 /******************** Behavior ********************/
 
-type Action func(FSM, Event)
+type Action func(Context, Event)
 
 type behavior struct {
-	*process
 	action Action
 }
 
@@ -187,7 +189,7 @@ func Model(elements ...Element) *model {
 	for _, buildable := range elements {
 		buildable(builder)
 	}
-	builder.model.behavior.action = func(ctx FSM, event Event) {
+	builder.model.behavior.action = func(ctx Context, event Event) {
 		ctx.mutex.Lock()
 		defer ctx.mutex.Unlock()
 		ctx.state = ctx.initial(nil, event)
@@ -250,9 +252,7 @@ var inactive = func() *active {
 }()
 
 type process struct {
-	context.Context
 	*model
-	Ref    Ref
 	state  *state
 	active map[*behavior]*active
 	mutex  *sync.Mutex
@@ -266,7 +266,7 @@ var activeKey = activeSymbol{}
 
 var fsmPool = sync.Pool{
 	New: func() any {
-		return &FSM{
+		return &Context{
 			process: &process{
 				model: &model{
 					behavior: &behavior{},
@@ -279,12 +279,12 @@ var fsmPool = sync.Pool{
 	},
 }
 
-func New(ctx context.Context, model *model) *FSM {
-	fsm := fsmPool.Get().(*FSM)
+func New(ctx context.Context, ref Ref, model *model) *Context {
+	fsm := fsmPool.Get().(*Context)
 	fsm.states = model.states
 	fsm.submachineState = model.submachineState
 	fsm.behavior.action = model.behavior.action
-	fsm.Ref = ctx
+	fsm.Ref = ref
 	active, ok := ctx.Value(activeKey).(*sync.Map)
 	if !ok {
 		active = &sync.Map{}
@@ -295,13 +295,13 @@ func New(ctx context.Context, model *model) *FSM {
 	return fsm
 }
 
-func Delete(fsm **FSM) {
+func Delete(fsm **Context) {
 	(*fsm).terminate((*fsm).process.model.behavior)
 	fsmPool.Put(*fsm)
 	*fsm = nil
 }
 
-func Dispatch[T Dispatchable](fsm *FSM, event T) bool {
+func Dispatch[T Dispatchable](fsm *Context, event T) bool {
 	if fsm == nil {
 		slog.Error("[FSM][Dispatch] FSM is nil")
 		return false
@@ -315,14 +315,14 @@ func Dispatch[T Dispatchable](fsm *FSM, event T) bool {
 	return false
 }
 
-func (fsm *FSM) DispatchAll(event Event) {
+func (fsm *Context) DispatchAll(event Event) {
 	active, ok := fsm.Value(activeKey).(*sync.Map)
 	if !ok {
 		slog.Warn("[fsm][Broadcast] no machines found in context")
 		return
 	}
 	active.Range(func(value any, _ any) bool {
-		fsm, ok := value.(*FSM)
+		fsm, ok := value.(*Context)
 		if !ok {
 			slog.Warn("[fsm][Broadcast] value is not a *fsm", "value", value, "fsm", fsm)
 			return true
@@ -332,7 +332,7 @@ func (fsm *FSM) DispatchAll(event Event) {
 	})
 }
 
-func (fsm *FSM) State() Path {
+func (fsm *Context) State() Path {
 	if fsm == nil {
 		return ""
 	}
@@ -343,14 +343,14 @@ func (fsm *FSM) State() Path {
 	return fsm.state.path
 }
 
-func (fsm *FSM) evaluate(element *constraint, event Event) bool {
+func (fsm *Context) evaluate(element *constraint, event Event) bool {
 	if element == nil {
 		return true
 	}
-	return element.expr(FSM{Context: fsm.Context, process: fsm.process}, event)
+	return element.expr(Context{process: fsm.process}, event)
 }
 
-func (fsm *FSM) terminate(element *behavior) {
+func (fsm *Context) terminate(element *behavior) {
 	if element == nil {
 		return
 	}
@@ -362,7 +362,7 @@ func (fsm *FSM) terminate(element *behavior) {
 	<-active.channel
 }
 
-func (fsm *FSM) exit(state *state, event Event) {
+func (fsm *Context) exit(state *state, event Event) {
 	if state == nil {
 		return
 	}
@@ -371,7 +371,7 @@ func (fsm *FSM) exit(state *state, event Event) {
 	fsm.execute(state.exit, event, true)
 }
 
-func (fsm *FSM) enter(state *state, event Event) {
+func (fsm *Context) enter(state *state, event Event) {
 	slog.Debug("[state][enter] enter", "state", state, "event", event)
 	if state == nil || fsm == nil || state.kind != StateKind {
 		return
@@ -403,7 +403,7 @@ func (fsm *FSM) enter(state *state, event Event) {
 
 }
 
-func (fsm *FSM) execute(element *behavior, event Event, wait bool) *active {
+func (fsm *Context) execute(element *behavior, event Event, wait bool) *active {
 	if fsm == nil || element == nil || element.action == nil {
 		return inactive
 	}
@@ -416,7 +416,7 @@ func (fsm *FSM) execute(element *behavior, event Event, wait bool) *active {
 	ctx, current.cancel = context.WithCancel(fsm)
 	current.channel = make(chan struct{})
 	go func() {
-		element.action(FSM{Context: ctx, process: fsm.process}, event)
+		element.action(Context{Context: ctx, process: fsm.process}, event)
 		close(current.channel)
 	}()
 	if wait {
@@ -425,7 +425,7 @@ func (fsm *FSM) execute(element *behavior, event Event, wait bool) *active {
 	return current
 }
 
-func (fsm *FSM) transition(current *state, transition *transition, event Event) *state {
+func (fsm *Context) transition(current *state, transition *transition, event Event) *state {
 	slog.Debug("[fsm][transition] transition", "transition", transition, "current", current, "event", event)
 	var ok bool
 	var target *state
@@ -480,7 +480,7 @@ func (fsm *FSM) transition(current *state, transition *transition, event Event) 
 	return nil
 }
 
-func (fsm *FSM) initial(state *state, event Event) *state {
+func (fsm *Context) initial(state *state, event Event) *state {
 	if fsm == nil {
 		slog.Error("[FSM][initial] FSM is nil")
 		return nil
@@ -504,7 +504,7 @@ func (fsm *FSM) initial(state *state, event Event) *state {
 	return fsm.transition(initial, transition, event)
 }
 
-func (fsm *FSM) wait(behavior *behavior) {
+func (fsm *Context) wait(behavior *behavior) {
 	if fsm == nil {
 		return
 	}
@@ -515,7 +515,7 @@ func (fsm *FSM) wait(behavior *behavior) {
 	<-active.channel
 }
 
-func (fsm *FSM) Dispatch(event Event) bool {
+func (fsm *Context) Dispatch(event Event) bool {
 	if fsm == nil {
 		slog.Error("[FSM][Dispatch] FSM is nil")
 		return false
