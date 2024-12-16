@@ -491,7 +491,7 @@ func TestTransitionFromNestedEntry(t *testing.T) {
 		fsm.State("a",
 			fsm.Initial("b"),
 			fsm.State("b", fsm.Entry(func(ctx fsm.Context, event fsm.Event) {
-				go ctx.FSM.Dispatch(fsm.NewEvent("a", nil))
+				go ctx.Dispatch(fsm.NewEvent("a", nil))
 			})),
 			fsm.State("c"),
 			fsm.Transition(
