@@ -60,7 +60,7 @@ func TestGuard(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Guard(func(ctx fsm.Context, event fsm.Event) bool {
+			fsm.Guard(func(ctx fsm.Instance, event fsm.Event) bool {
 				return check
 			}),
 		),
@@ -91,13 +91,13 @@ func TestChoice(t *testing.T) {
 			fsm.Choice(
 				fsm.Transition(
 					fsm.Target("bar"),
-					fsm.Guard(func(ctx fsm.Context, event fsm.Event) bool {
+					fsm.Guard(func(ctx fsm.Instance, event fsm.Event) bool {
 						return check
 					}),
 				),
 				fsm.Transition(
 					fsm.Target("baz"),
-					fsm.Guard(func(ctx fsm.Context, event fsm.Event) bool {
+					fsm.Guard(func(ctx fsm.Instance, event fsm.Event) bool {
 						return !check
 					}),
 				),
@@ -128,7 +128,7 @@ func TestEffect(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Effect(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Effect(func(ctx fsm.Instance, event fsm.Event) {
 				call = true
 			}),
 		),
@@ -143,7 +143,7 @@ func TestEffect(t *testing.T) {
 	}
 }
 
-func fooEntry(ctx fsm.Context, event fsm.Event) {
+func fooEntry(ctx fsm.Instance, event fsm.Event) {
 	slog.Debug("fooEntry", "event", event)
 	if foo, ok := ctx.Ref.(*Foo); ok {
 		foo.bar++
@@ -215,10 +215,10 @@ func TestActivityTermination(t *testing.T) {
 
 	model := fsm.New(
 		fsm.Initial("foo",
-			fsm.Entry(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Entry(func(ctx fsm.Instance, event fsm.Event) {
 				t.Log("Entry action started")
 			}),
-			fsm.Activity(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Activity(func(ctx fsm.Instance, event fsm.Event) {
 				t.Log("Activity started")
 				activityRunning = true
 				wg.Done()
@@ -227,7 +227,7 @@ func TestActivityTermination(t *testing.T) {
 			}),
 		),
 		fsm.State("bar",
-			fsm.Entry(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Entry(func(ctx fsm.Instance, event fsm.Event) {
 				t.Log("Entry action started")
 			}),
 		),
@@ -258,10 +258,10 @@ func TestActivityTermination(t *testing.T) {
 func TestNestedStates(t *testing.T) {
 	actions := []string{}
 	testState := func(name string, states ...fsm.Element) fsm.Element {
-		entry := fsm.Entry(func(ctx fsm.Context, event fsm.Event) {
+		entry := fsm.Entry(func(ctx fsm.Instance, event fsm.Event) {
 			actions = append(actions, name+"/entry")
 		})
-		exit := fsm.Exit(func(ctx fsm.Context, event fsm.Event) {
+		exit := fsm.Exit(func(ctx fsm.Instance, event fsm.Event) {
 			actions = append(actions, name+"/exit")
 		})
 		return fsm.State(name, append(states, entry, exit)...)
@@ -348,7 +348,7 @@ func TestNestedTransitions(t *testing.T) {
 			),
 		),
 		fsm.State("b",
-			fsm.Initial("c", fsm.Entry(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Initial("c", fsm.Entry(func(ctx fsm.Instance, event fsm.Event) {
 				entryCalls++
 			})),
 			fsm.Transition(
@@ -407,13 +407,13 @@ func TestSelfTransition(t *testing.T) {
 
 	model := fsm.New(
 		fsm.Initial("a",
-			fsm.Entry(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Entry(func(ctx fsm.Instance, event fsm.Event) {
 				entry++
 			}),
-			fsm.Activity(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Activity(func(ctx fsm.Instance, event fsm.Event) {
 				activity++
 			}),
-			fsm.Exit(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Exit(func(ctx fsm.Instance, event fsm.Event) {
 				exit++
 			}),
 		),
@@ -466,7 +466,7 @@ func TestInternalTransition(t *testing.T) {
 		fsm.Transition(
 			fsm.On("a"),
 			fsm.Source("a"),
-			fsm.Effect(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Effect(func(ctx fsm.Instance, event fsm.Event) {
 				effectCalled = true
 			}),
 		),
@@ -484,7 +484,7 @@ func TestTransitionFromNestedEntry(t *testing.T) {
 		fsm.Initial("a"),
 		fsm.State("a",
 			fsm.Initial("b"),
-			fsm.State("b", fsm.Entry(func(ctx fsm.Context, event fsm.Event) {
+			fsm.State("b", fsm.Entry(func(ctx fsm.Instance, event fsm.Event) {
 				go ctx.Send(fsm.NewEvent("a", nil))
 			})),
 			fsm.State("c"),
@@ -495,7 +495,7 @@ func TestTransitionFromNestedEntry(t *testing.T) {
 			),
 		),
 		fsm.State("b",
-			fsm.Initial("c", fsm.Entry(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Initial("c", fsm.Entry(func(ctx fsm.Instance, event fsm.Event) {
 				entryCalls++
 			})),
 			fsm.Transition(
