@@ -29,7 +29,7 @@ func TestFSM(t *testing.T) {
 			fsm.Target("bar"),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	if f.State() != "foo" {
 		t.Error("Initial state is not foo", "state", f.State())
 		return
@@ -43,7 +43,7 @@ func TestFSM(t *testing.T) {
 	}
 	fsm.Delete(&f)
 	if f.State() != "" {
-		t.Fatal("Bad state after terminate", f)
+		t.Fatal("Bad state after terminate", f.State())
 	}
 }
 
@@ -65,7 +65,7 @@ func TestGuard(t *testing.T) {
 			}),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	ok := f.Dispatch(fsm.NewEvent("foo", nil))
 	if ok || f.State() != "foo" {
 		t.Error("Transition should not happen because of Check", "state", f.State())
@@ -104,14 +104,14 @@ func TestChoice(t *testing.T) {
 			),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	slog.Info("f", "f", f)
 	ok := f.Dispatch(fsm.NewEvent("foo", nil))
 	if !ok || f.State() != "baz" {
 		t.Error("Should transition to baz when check is false", "state", f.State())
 	}
 	check = true
-	f = fsm.New(context.Background(), nil, model)
+	f = fsm.New(context.Background(), model)
 	ok = f.Dispatch(fsm.NewEvent("foo", nil))
 	if !ok || f.State() != "bar" {
 		t.Error("Should transition to bar when check is true")
@@ -128,12 +128,12 @@ func TestEffect(t *testing.T) {
 			fsm.On("foo"),
 			fsm.Source("foo"),
 			fsm.Target("bar"),
-			fsm.Effect(func(ctx fsm.Context, event fsm.Event) {
+			fsm.Effect(func(fsm fsm.Context, event fsm.Event) {
 				call = true
 			}),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	ok := f.Dispatch(fsm.NewEvent("foo", nil))
 	if !ok {
 		t.Error("Event returned false")
@@ -145,21 +145,21 @@ func TestEffect(t *testing.T) {
 
 func fooEntry(ctx fsm.Context, event fsm.Event) {
 	slog.Debug("fooEntry", "event", event)
-	if foo, ok := ctx.Ref.(*Foo); ok {
+	if foo, ok := any(ctx.FSM).(*Foo); ok {
 		foo.bar++
 	}
 }
 
 func fooGuard(ctx fsm.Context, event fsm.Event) bool {
 	slog.Debug("fooGuard", "event", event)
-	if foo, ok := ctx.Ref.(*Foo); ok {
+	if foo, ok := any(ctx.FSM).(*Foo); ok {
 		return foo.bar == 0
 	}
 	return false
 }
 
 type Foo struct {
-	context.Context
+	*fsm.FSM
 	bar int
 }
 
@@ -171,13 +171,13 @@ var FooModel = fsm.Model(
 func TestCast(t *testing.T) {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 	foo := &Foo{}
-	f := fsm.New(context.Background(), foo, FooModel)
-	_, ok := f.Ref.(*Foo)
-	if !ok {
-		t.Fatal("f.Context is not foo")
-	}
-	if f.State() == "" {
-		t.Fatal("f is nil")
+	foo.FSM = fsm.New(context.Background(), FooModel)
+	// _, ok := foo.FSM.(*Foo)
+	// if !ok {
+	// 	t.Fatal("f.Context is not foo")
+	// }
+	if foo.State() == "" {
+		t.Fatal("foo is nil")
 	}
 }
 
@@ -243,7 +243,7 @@ func TestActivityTermination(t *testing.T) {
 			fsm.Target("bar"),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	// Wait for activity to start
 	wg.Wait()
 	t.Log("Activity started")
@@ -282,7 +282,7 @@ func TestNestedStates(t *testing.T) {
 			fsm.Target("bar"),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	if f.State() != "a/b/c" {
 		t.Error("fsm state is not initial state a/b/c")
 		return
@@ -332,7 +332,7 @@ func TestNestedInitial(t *testing.T) {
 		fsm.Initial("a"),
 		fsm.State("a", fsm.Initial("b"), fsm.State("b")),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	if f.State() != "a/b" {
 		t.Error("fsm state is not initial state a/b", "state", f.State())
 		return
@@ -364,7 +364,7 @@ func TestNestedTransitions(t *testing.T) {
 			),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	if f.State() != "a/b" {
 		t.Fatal("fsm state is not initial state a/b", "state", f.State())
 	}
@@ -392,9 +392,9 @@ func TestBroadcast(t *testing.T) {
 		),
 	)
 
-	aFSM := fsm.New(context.Background(), nil, model)
-	bFSM := fsm.New(aFSM, nil, model)
-	cFSM := fsm.New(bFSM, nil, model)
+	aFSM := fsm.New(context.Background(), model)
+	bFSM := fsm.New(aFSM, model)
+	cFSM := fsm.New(bFSM, model)
 	cFSM.DispatchAll(fsm.NewEvent("a", nil))
 	time.Sleep(1 * time.Millisecond)
 	if aFSM.State() != "b" {
@@ -429,7 +429,7 @@ func TestSelfTransition(t *testing.T) {
 			fsm.Target("a"),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	f.State()
 	if entry != 1 {
 		t.Fatal("Entry action not called")
@@ -458,7 +458,7 @@ func TestInitialWithChoice(t *testing.T) {
 		fsm.State("b"),
 		fsm.State("c"),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	if f.State() != "b" {
 		t.Fatal("fsm state is not b", "state", f.State())
 	}
@@ -477,7 +477,7 @@ func TestInternalTransition(t *testing.T) {
 			}),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	f.Dispatch(fsm.NewEvent("a", nil))
 	if !effectCalled {
 		t.Fatal("Effect not called")
@@ -491,7 +491,7 @@ func TestTransitionFromNestedEntry(t *testing.T) {
 		fsm.State("a",
 			fsm.Initial("b"),
 			fsm.State("b", fsm.Entry(func(ctx fsm.Context, event fsm.Event) {
-				go ctx.Dispatch(fsm.NewEvent("a", nil))
+				go ctx.FSM.Dispatch(fsm.NewEvent("a", nil))
 			})),
 			fsm.State("c"),
 			fsm.Transition(
@@ -511,7 +511,7 @@ func TestTransitionFromNestedEntry(t *testing.T) {
 			),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	if f.State() != "a/b" {
 		t.Fatal("fsm state is not initial state a/b", "state", f.State())
 	}
@@ -538,7 +538,7 @@ func TestLocalTransition(t *testing.T) {
 			fsm.Target("a/b"),
 		),
 	)
-	f := fsm.New(context.Background(), nil, model)
+	f := fsm.New(context.Background(), model)
 	f.Dispatch(fsm.NewEvent("a", nil))
 	if f.State() != "a/b" {
 		t.Fatal("fsm state is not a/b", "state", f.State())
