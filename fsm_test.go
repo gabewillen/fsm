@@ -145,58 +145,39 @@ func TestEffect(t *testing.T) {
 
 func fooEntry(ctx fsm.Context, event fsm.Event) {
 	slog.Debug("fooEntry", "event", event)
-	if foo, ok := any(ctx.FSM).(*Foo); ok {
+	if foo, ok := any(ctx.Ref).(*Foo); ok {
 		foo.bar++
+		return
 	}
-}
-
-func fooGuard(ctx fsm.Context, event fsm.Event) bool {
-	slog.Debug("fooGuard", "event", event)
-	if foo, ok := any(ctx.FSM).(*Foo); ok {
-		return foo.bar == 0
-	}
-	return false
+	slog.Error("fooEntry", "error", "foo is not a *Foo")
 }
 
 type Foo struct {
 	*fsm.FSM
+	context.Context
 	bar int
 }
 
 var FooModel = fsm.Model(
-	fsm.Initial("foo", fsm.Guard(fooGuard)),
+	fsm.Initial("foo"),
 	fsm.State("foo", fsm.Entry(fooEntry)),
 )
 
 func TestCast(t *testing.T) {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
-	foo := &Foo{}
-	foo.FSM = fsm.New(context.Background(), FooModel)
-	// _, ok := foo.FSM.(*Foo)
-	// if !ok {
-	// 	t.Fatal("f.Context is not foo")
-	// }
+	foo := &Foo{
+		Context: context.Background(),
+	}
+	foo.FSM = fsm.New(foo, FooModel)
+	_, ok := foo.Ref.(*Foo)
+	if !ok {
+		t.Fatal("foo.Ref is not a *Foo")
+	}
 	if foo.State() == "" {
 		t.Fatal("foo is nil")
 	}
 }
 
-// func TestOnTransition(t *testing.T) {
-// 	model := fsm.NewModel(
-// 		fsm.Initial("foo"),
-// 		fsm.State("foo"),
-// 		fsm.Transition(
-// 			fsm.On("foo"),
-// 			fsm.Source("foo"),
-// 			fsm.Target("bar"),
-// 		),
-// 		fsm.Transition(
-// 			fsm.On("bar"),
-// 			fsm.Source("bar"),
-// 			fsm.Target("foo"),
-// 		),
-// 	)
-// 	f := fsm.New(context.Background(), model)
 // 	var calls int
 // 	f.AddListener(func(trace fsm.Trace) {
 // 		calls++

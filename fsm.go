@@ -255,6 +255,7 @@ type FSM struct {
 	state  *state
 	active map[*behavior]*active
 	mutex  *sync.Mutex
+	Ref    any
 }
 
 var empty = struct{}{}
@@ -287,6 +288,7 @@ func New(ctx context.Context, model *model) *FSM {
 	}
 	active.Store(fsm, empty)
 	fsm.Context = context.WithValue(ctx, activeKey, active)
+	fsm.Ref = ctx
 	fsm.execute(fsm.behavior, nil, false)
 	return fsm
 }
